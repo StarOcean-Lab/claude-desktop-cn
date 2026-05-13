@@ -1,0 +1,1 @@
+import{r as e,j as r}from"./vendor-CmVPl-QA.js";import{c as o}from"./c5f4e1303-CSqThUeQ.js";const s=e.memo(({children:e,className:s})=>r.jsx("div",{className:o("flex-1 flex flex-col min-h-0 overflow-hidden bg-bg-000 border border-border-300 rounded-xl p-5",s),children:e}));s.displayName="FileContentContainer";export{s as F};

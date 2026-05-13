@@ -1,0 +1,1 @@
+const t=t=>`ccr-fork-landing:${t}`;function e(e,s){try{sessionStorage.setItem(t(e),JSON.stringify(s))}catch{}}function s(e){try{const s=sessionStorage.getItem(t(e));return s?(sessionStorage.removeItem(t(e)),JSON.parse(s)):null}catch{return null}}export{s as p,e as s};

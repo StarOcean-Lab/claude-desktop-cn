@@ -1,0 +1,23 @@
+User-Agent: ia_archiver
+Allow: /$
+Allow: /login
+Disallow: /
+
+User-Agent: GPTBot
+User-Agent: OAI-SearchBot
+User-Agent: ChatGPT-User
+Disallow: /
+
+User-Agent: *
+Disallow: /new?*
+Disallow: /chat/*
+Disallow: /share/*
+Disallow: /magic-link*
+Disallow: /api/*
+Disallow: /onboarding*
+Disallow: /upgrade*
+Disallow: /lti/*
+Disallow: /settings*
+Disallow: /task*
+
+Sitemap: https://claude.ai/sitemap.xml

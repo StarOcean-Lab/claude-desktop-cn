@@ -1,0 +1,8 @@
+{
+  "_comment_": "OPTIONAL. Place at %LOCALAPPDATA%\\Claude-3p\\enterprise-policies.json. By default Cowork reads ~/.claude/settings.json (env.ANTHROPIC_BASE_URL/AUTH_TOKEN/DEFAULT_*_MODEL). Use this file ONLY to (a) give Cowork a different gateway from CLI, or (b) override individual fields like authScheme. Fields here override the synthesized config from settings.json.",
+
+  "inferenceGatewayBaseUrl": "https://your-cowork-only-gateway.example.com",
+  "inferenceGatewayApiKey": "sk-REPLACE-WITH-YOUR-KEY",
+  "inferenceGatewayAuthScheme": "bearer",
+  "inferenceModels": ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"]
+}

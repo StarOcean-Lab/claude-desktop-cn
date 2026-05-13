@@ -1,0 +1,21 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temp & backup
+*.bak
+*BACKUP*
+*~
+
+# Node (if any)
+node_modules/
+
+# Logs
+*.log

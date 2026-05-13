@@ -1,0 +1,1054 @@
+// Inject frame fix before main app loads
+const Module = require('module');
+const path = require('path');
+const originalRequire = Module.prototype.require;
+
+console.log('[Frame Fix] Wrapper loaded');
+
+// === NODE_ENV=production patch ===========================================
+// The main bundle reads NODE_ENV at module load to decide whether to enforce
+// Anthropic-name-only validation on inferenceModels:
+//   const LLA = process.env.NODE_ENV !== "production" || false;
+//   function ULA(e, A) { if (!LLA) return {ok: true}; ... }
+// Electron does not set NODE_ENV by default (it's undefined in packaged
+// builds). undefined !== "production" → LLA = true → the bundle rejects
+// non-Anthropic model names (DeepSeek's deepseek-v4-pro, MiniMax's
+// MiniMax-M1, etc.) for both Cowork and Code paths with the error:
+//   "configured model X is not an Anthropic model. Gateway deployments
+//    require an Anthropic model from the provider catalog"
+// Forcing NODE_ENV=production here (before the main bundle is required)
+// makes LLA = false, model name validation is bypassed, and any gateway
+// model name passes. Must run before Module.prototype.require returns the
+// main bundle for the first time.
+if (!process.env.NODE_ENV) {
+  process.env.NODE_ENV = 'production';
+  console.log('[Cowork] forced process.env.NODE_ENV=production to bypass non-Anthropic model name rejection');
+}
+// === end NODE_ENV patch ==================================================
+
+// === yukonSilver MSIX bypass patch =======================================
+// On Windows, the bundle's Hc() function checks whether Claude Desktop was
+// installed via MSIX (Microsoft Store or AppX). For portable builds the
+// answer is no, which makes Cowork tab show "Cowork requires a newer
+// installation / Reinstall the desktop app" with unsupportedCode=msix_required.
+//
+// Hc() reads `process.windowsStore` first — that flag is normally set by
+// Electron when the .exe is launched from an MSIX/AppX package context.
+// We force it to true here, before the main bundle runs, so Hc() short-
+// circuits to "MSIX detected" and the yukonSilver platform check at
+// index.js:8293556 falls through to the next predicate (Windows version
+// build >= 19041, which we satisfy on any Win10 21H2+ / Win11).
+//
+// Caveat: forcing this flag also makes the bundle's auto-updater think we
+// are an MSIX install. We mitigate by setting disableAutoUpdates in
+// enterprise-policies.json (the bundle's update path then short-circuits
+// before hitting any update server).
+if (process.platform === 'win32' && !process.windowsStore) {
+  try {
+    Object.defineProperty(process, 'windowsStore', {
+      value: true,
+      writable: false,
+      configurable: true,
+      enumerable: true,
+    });
+    console.log('[Cowork] forced process.windowsStore=true to bypass yukonSilver msix_required gate');
+  } catch (e) {
+    console.warn('[Cowork] failed to set process.windowsStore:', e && e.message);
+  }
+}
+// === end yukonSilver MSIX bypass =========================================
+
+// === CCD env passthrough patch ===========================================
+// Claude Desktop's main bundle (T4(e) at index.js:8789622) builds the env
+// for spawned claude.exe child processes (Code tab) by setting:
+//   ANTHROPIC_BASE_URL = enterprise-policies.json's inferenceGatewayBaseUrl
+//   ANTHROPIC_AUTH_TOKEN = enterprise-policies.json's inferenceGatewayApiKey
+// This forces Code tab's local CLI subprocess to use the SAME gateway as
+// Cowork tab. For users who already have a working Claude Code CLI setup
+// (~/.claude.json + system env vars ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN),
+// this overwrites their setup and breaks Code tab when the two gateways
+// differ (e.g. Cowork on DeepSeek but Code CLI on a different provider).
+//
+// This patch hooks child_process.spawn (and execFile/fork) to detect spawns
+// of claude.exe under the CCD storage dir. When detected, it restores the
+// user's original ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN (captured at
+// wrapper load time, before the main bundle has a chance to mutate them)
+// into the spawn's env object. Other env vars from the main bundle pass
+// through untouched.
+//
+// Captured at wrapper load time so even if the main bundle later does
+// `delete process.env.ANTHROPIC_BASE_URL`, our overrides stay intact.
+const userBaseUrl = process.env.ANTHROPIC_BASE_URL || process.env.CLAUDE_CODE_USER_BASE_URL || '';
+const userAuthToken = process.env.ANTHROPIC_AUTH_TOKEN || process.env.CLAUDE_CODE_USER_AUTH_TOKEN || '';
+const userApiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_USER_API_KEY || '';
+const ccdEnvPassthrough = !!(userBaseUrl || userAuthToken || userApiKey);
+
+// IMPORTANT: strip these from process.env so the main bundle's Cowork
+// inference path (which uses Anthropic SDK with default baseURL =
+// process.env.ANTHROPIC_BASE_URL) doesn't accidentally pick up the user's
+// Claude Code gateway and route Cowork requests there. Captured copies
+// above are still re-injected into spawned claude.exe child processes
+// by the spawn hook below, so Code tab keeps working.
+delete process.env.ANTHROPIC_BASE_URL;
+delete process.env.ANTHROPIC_AUTH_TOKEN;
+delete process.env.ANTHROPIC_API_KEY;
+
+if (ccdEnvPassthrough) {
+  console.log('[CCD-env] captured user vars and stripped from process.env');
+  console.log('[CCD-env]   ANTHROPIC_BASE_URL =', userBaseUrl || '(unset)', '(re-injected for Code tab only)');
+  console.log('[CCD-env]   ANTHROPIC_AUTH_TOKEN =', userAuthToken ? '(present)' : '(unset)');
+  console.log('[CCD-env]   ANTHROPIC_API_KEY =', userApiKey ? '(present)' : '(unset)');
+} else {
+  console.log('[CCD-env] no user ANTHROPIC_* env vars at startup; passthrough disabled');
+}
+
+// === Inference request URL probe =========================================
+// Diagnostic: log every Electron net.request and global fetch invocation so
+// we can see exactly which URL the Cowork tab POST hits and which Auth
+// header it carries. Lets us tell whether the bundle uses the
+// enterprise-policies.json baseUrl or something else.
+//
+// Wraps electron.net.request and global fetch. Truncates body to 200 chars.
+// Disable by setting CLAUDE_INFERENCE_PROBE=0.
+if (process.env.CLAUDE_INFERENCE_PROBE !== '0') {
+  const electronModule = originalRequire.call(module, 'electron');
+  if (electronModule && electronModule.net && typeof electronModule.net.request === 'function') {
+    const origNetRequest = electronModule.net.request;
+    electronModule.net.request = function(opts) {
+      try {
+        const url = typeof opts === 'string' ? opts : (opts && (opts.url || opts.href)) || '?';
+        const method = (typeof opts === 'object' && opts && opts.method) || 'GET';
+        if (typeof url === 'string' && /\/v1\/(messages|models|chat)/i.test(url)) {
+          console.log(`[InferenceProbe] net.request ${method} ${url}`);
+        }
+        const req = origNetRequest.apply(this, arguments);
+        const origSetHeader = req.setHeader && req.setHeader.bind(req);
+        if (origSetHeader) {
+          req.setHeader = function(name, value) {
+            const lname = String(name).toLowerCase();
+            if (lname === 'authorization' || lname === 'x-api-key' || lname === 'anthropic-version') {
+              const v = String(value);
+              const masked = v.length > 16 ? v.slice(0, 12) + '...' + v.slice(-4) : v;
+              console.log(`[InferenceProbe]   header ${name}: ${masked}`);
+            }
+            return origSetHeader(name, value);
+          };
+        }
+        const origWrite = req.write && req.write.bind(req);
+        if (origWrite) {
+          req.write = function(chunk) {
+            try {
+              const s = chunk == null ? '' : (Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
+              if (s && s.length < 2000 && /"model"|"messages"/i.test(s)) {
+                console.log(`[InferenceProbe]   body: ${s.slice(0, 300)}${s.length > 300 ? '...' : ''}`);
+              }
+            } catch {}
+            return origWrite(chunk);
+          };
+        }
+        return req;
+      } catch (e) {
+        console.warn('[InferenceProbe] wrap failed:', e && e.message);
+        return origNetRequest.apply(this, arguments);
+      }
+    };
+    console.log('[InferenceProbe] wrapped electron.net.request');
+  }
+  // Wrap global fetch (Anthropic SDK uses this)
+  if (typeof globalThis.fetch === 'function') {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async function(input, init) {
+      try {
+        const url = typeof input === 'string' ? input : (input && input.url) || '?';
+        if (typeof url === 'string' && /\/v1\/(messages|models|chat)/i.test(url)) {
+          console.log(`[InferenceProbe] fetch ${(init && init.method) || 'GET'} ${url}`);
+          const headers = (init && init.headers) || {};
+          for (const k of Object.keys(headers)) {
+            const lk = k.toLowerCase();
+            if (lk === 'authorization' || lk === 'x-api-key' || lk === 'anthropic-version') {
+              const v = String(headers[k]);
+              const masked = v.length > 16 ? v.slice(0, 12) + '...' + v.slice(-4) : v;
+              console.log(`[InferenceProbe]   header ${k}: ${masked}`);
+            }
+          }
+          if (init && init.body && typeof init.body === 'string' && init.body.length < 2000) {
+            console.log(`[InferenceProbe]   body: ${init.body.slice(0, 300)}${init.body.length > 300 ? '...' : ''}`);
+          }
+        }
+      } catch {}
+      return origFetch.apply(this, arguments);
+    };
+    console.log('[InferenceProbe] wrapped global fetch');
+  }
+}
+// === end inference probe =================================================
+
+function isCcdClaudeExe(file) {
+  if (typeof file !== 'string') return false;
+  const f = file.replace(/\\/g, '/').toLowerCase();
+  // CCD stores binary at <userData>/claude-code/<version>/claude.exe.
+  // Match either the storage path (/claude-code/) or just the filename
+  // when the path is unqualified (CWD is the storage dir).
+  if (f.includes('/claude-code/') && f.endsWith('/claude.exe')) return true;
+  if (f.endsWith('/claude.exe') && f.includes('/claude-3p/')) return true;
+  return false;
+}
+
+function applyCcdEnvPassthrough(env) {
+  if (!env || typeof env !== 'object') return env;
+  const patched = { ...env };
+  if (userBaseUrl) patched.ANTHROPIC_BASE_URL = userBaseUrl;
+  if (userAuthToken) {
+    patched.ANTHROPIC_AUTH_TOKEN = userAuthToken;
+    if (userBaseUrl) patched.ANTHROPIC_API_KEY = '';  // bearer-style auth
+  }
+  if (userApiKey && !userAuthToken) {
+    patched.ANTHROPIC_API_KEY = userApiKey;
+    patched.ANTHROPIC_AUTH_TOKEN = '';
+  }
+  return patched;
+}
+
+if (ccdEnvPassthrough) {
+  const cp = originalRequire.call(module, 'child_process');
+  const origSpawn = cp.spawn;
+  const origExecFile = cp.execFile;
+  const origFork = cp.fork;
+  cp.spawn = function(file, args, options) {
+    if (isCcdClaudeExe(file)) {
+      console.log('[CCD-env] spawn intercepted:', file);
+      if (options && options.env) {
+        options.env = applyCcdEnvPassthrough(options.env);
+      } else {
+        options = { ...(options || {}), env: applyCcdEnvPassthrough(process.env) };
+      }
+    }
+    return origSpawn.call(this, file, args, options);
+  };
+  cp.execFile = function(file, args, options, cb) {
+    if (isCcdClaudeExe(file)) {
+      console.log('[CCD-env] execFile intercepted:', file);
+      if (typeof options === 'function') { cb = options; options = undefined; }
+      if (options && options.env) {
+        options.env = applyCcdEnvPassthrough(options.env);
+      } else {
+        options = { ...(options || {}), env: applyCcdEnvPassthrough(process.env) };
+      }
+    }
+    return origExecFile.call(this, file, args, options, cb);
+  };
+  cp.fork = function(modulePath, args, options) {
+    // CCD typically uses spawn, not fork; cover both.
+    if (isCcdClaudeExe(modulePath)) {
+      console.log('[CCD-env] fork intercepted:', modulePath);
+      if (options && options.env) {
+        options.env = applyCcdEnvPassthrough(options.env);
+      }
+    }
+    return origFork.call(this, modulePath, args, options);
+  };
+  // Also patch the 'node:' alias module (different cache slot).
+  try {
+    const cpNode = originalRequire.call(module, 'node:child_process');
+    cpNode.spawn = cp.spawn;
+    cpNode.execFile = cp.execFile;
+    cpNode.fork = cp.fork;
+  } catch {}
+  console.log('[CCD-env] child_process.{spawn,execFile,fork} patched');
+}
+// === end CCD env passthrough patch =======================================
+
+// Fix process.resourcesPath to match the actual location of app.asar.
+// In Nix builds, electron is a separate store path so process.resourcesPath
+// points to the Electron package's resources dir, not where our tray icons
+// and app.asar.unpacked live. Deriving from __dirname (the asar root) gives
+// the correct path; for deb/AppImage builds the values already match.
+const derivedResourcesPath = path.dirname(__dirname);
+if (derivedResourcesPath !== process.resourcesPath) {
+  console.log('[Frame Fix] Correcting process.resourcesPath');
+  console.log('[Frame Fix]   Was:', process.resourcesPath);
+  console.log('[Frame Fix]   Now:', derivedResourcesPath);
+  process.resourcesPath = derivedResourcesPath;
+}
+
+// Menu bar visibility mode, controlled by CLAUDE_MENU_BAR env var:
+//   'auto'    - hidden by default, Alt toggles visibility (current default)
+//   'visible' - always visible, Alt does not toggle (stable layout)
+//   'hidden'  - always hidden, Alt does not toggle
+// Also accepts boolean-style aliases: 1/true/yes/on -> visible, 0/false/no/off -> hidden
+const VALID_MENU_BAR_MODES = ['auto', 'visible', 'hidden'];
+const MENU_BAR_ALIASES = {
+  '1': 'visible', 'true': 'visible', 'yes': 'visible', 'on': 'visible',
+  '0': 'hidden', 'false': 'hidden', 'no': 'hidden', 'off': 'hidden',
+};
+const rawMenuBarMode = (process.env.CLAUDE_MENU_BAR || 'auto').toLowerCase();
+const resolvedMode = MENU_BAR_ALIASES[rawMenuBarMode] || rawMenuBarMode;
+const MENU_BAR_MODE = VALID_MENU_BAR_MODES.includes(resolvedMode) ? resolvedMode : 'auto';
+if (resolvedMode !== rawMenuBarMode) {
+  console.log(`[Frame Fix] CLAUDE_MENU_BAR '${process.env.CLAUDE_MENU_BAR}' resolved to '${resolvedMode}'`);
+} else if (resolvedMode !== MENU_BAR_MODE) {
+  console.warn(`[Frame Fix] Unknown CLAUDE_MENU_BAR value '${process.env.CLAUDE_MENU_BAR}', falling back to 'auto'. Valid: ${VALID_MENU_BAR_MODES.join(', ')}, or 0/1/true/false/yes/no/on/off`);
+}
+console.log(`[Frame Fix] Menu bar mode: ${MENU_BAR_MODE}`);
+
+// Titlebar mode, controlled by CLAUDE_TITLEBAR_STYLE env var:
+//   'hybrid' (default) - native OS frame (frame:true) + wco-shim active.
+//                        Stacked layout: OS titlebar on top draws
+//                        min/max/close, claude.ai's in-app topbar
+//                        renders below it via the shim's UA +
+//                        matchMedia overrides. Topbar buttons clickable.
+//                        Recommended Linux experience.
+//   'native'           - system-decorated window (frame:true), no shim.
+//                        DE draws min/max/close; claude.ai's in-app
+//                        topbar is hidden by its UA gate. Use if the
+//                        in-app topbar conflicts with your DE.
+//   'hidden'           - frameless window with Window Controls Overlay
+//                        configured (matches Windows / macOS upstream).
+//                        BROKEN ON LINUX X11: topbar buttons not
+//                        clickable because Chromium creates an implicit
+//                        WM-level drag region for frameless windows
+//                        that intercepts mouse events. Kept for
+//                        Wayland comparison and future investigation;
+//                        see docs/learnings/linux-topbar-shim.md.
+// Applies to the main window only. Popups (Quick Entry, About) are
+// always frameless regardless of this setting.
+const VALID_TITLEBAR_STYLES = ['hybrid', 'native', 'hidden'];
+const rawTitlebarStyle = (process.env.CLAUDE_TITLEBAR_STYLE || 'hybrid').toLowerCase();
+const TITLEBAR_STYLE = VALID_TITLEBAR_STYLES.includes(rawTitlebarStyle)
+  ? rawTitlebarStyle
+  : 'hybrid';
+if (rawTitlebarStyle !== TITLEBAR_STYLE) {
+  console.warn(`[Frame Fix] Unknown CLAUDE_TITLEBAR_STYLE value '${process.env.CLAUDE_TITLEBAR_STYLE}', falling back to 'hybrid'. Valid: ${VALID_TITLEBAR_STYLES.join(', ')}`);
+}
+console.log(`[Frame Fix] Titlebar style: ${TITLEBAR_STYLE}`);
+
+// Keep the app alive when the main window is closed (hide to tray),
+// so in-app schedulers / MCP servers / the tray icon survive a
+// stray click on X. Explicit quit paths (Ctrl+Q via the focused
+// webContents listener above, tray menu Quit, File > Quit, cmd+Q,
+// SIGTERM) still go through app.quit() → before-quit, which arms
+// the flag so the close handler lets the windows actually close.
+// Set CLAUDE_QUIT_ON_CLOSE=1 to restore the Electron-default
+// "closing the last window quits the app" behaviour.
+const CLOSE_TO_TRAY = process.platform === 'linux'
+  && process.env.CLAUDE_QUIT_ON_CLOSE !== '1';
+console.log(`[Frame Fix] Close-to-tray: ${CLOSE_TO_TRAY ? 'on' : 'off'}`);
+
+// Detect if a window intends to be frameless (popup/Quick Entry/About)
+// Quick Entry: titleBarStyle:"", skipTaskbar:true, transparent:true, resizable:false
+// About:       titleBarStyle:"", skipTaskbar:true, resizable:false
+// Main:        titleBarStyle:"", titleBarOverlay:false(linux), resizable (has minWidth)
+// The main window has minWidth set; popups do not.
+function isPopupWindow(options) {
+  if (!options) return false;
+  if (options.frame === false) return true;
+  if (options.titleBarStyle === '' && !options.minWidth) return true;
+  return false;
+}
+
+// CSS injection for Linux scrollbar styling
+// Respects both light and dark themes via prefers-color-scheme
+const LINUX_CSS = `
+  /* Scrollbar styling - thin, unobtrusive, adapts to theme */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(128, 128, 128, 0.3);
+    border-radius: 4px;
+    transition: background 0.15s ease;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(128, 128, 128, 0.55);
+  }
+  @media (prefers-color-scheme: dark) {
+    ::-webkit-scrollbar-thumb {
+      background: rgba(200, 200, 200, 0.2);
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(200, 200, 200, 0.4);
+    }
+  }
+`;
+
+// Build the patched BrowserWindow class and Menu interceptor once,
+// on first require('electron'), then reuse via Proxy on every access.
+let PatchedBrowserWindow = null;
+let patchedSetApplicationMenu = null;
+let electronModule = null;
+
+Module.prototype.require = function(id) {
+  const result = originalRequire.apply(this, arguments);
+
+  if (id === 'electron') {
+    // Build patches once from the real electron module
+    if (!PatchedBrowserWindow) {
+      electronModule = result;
+      const OriginalBrowserWindow = result.BrowserWindow;
+      const OriginalMenu = result.Menu;
+
+      PatchedBrowserWindow = class BrowserWindowWithFrame extends OriginalBrowserWindow {
+        constructor(options) {
+          console.log('[Frame Fix] BrowserWindow constructor called');
+          let popup = false;
+          if (process.platform === 'linux') {
+            options = options || {};
+            const originalFrame = options.frame;
+            popup = isPopupWindow(options);
+
+            if (popup) {
+              // Popup/Quick Entry windows: keep frameless for proper UX
+              options.frame = false;
+              // Remove macOS-specific titlebar options that don't apply on Linux
+              delete options.titleBarStyle;
+              delete options.titleBarOverlay;
+              console.log('[Frame Fix] Popup detected, keeping frameless');
+            } else if (TITLEBAR_STYLE === 'native') {
+              // Main window, native mode: force system frame.
+              options.frame = true;
+              // Menu bar behavior depends on CLAUDE_MENU_BAR mode:
+              // 'auto' (default): hidden, Alt toggles
+              // 'visible'/'hidden': no Alt toggle
+              options.autoHideMenuBar = (MENU_BAR_MODE === 'auto');
+              delete options.titleBarStyle;
+              delete options.titleBarOverlay;
+              console.log(`[Frame Fix] Modified frame from ${originalFrame} to true`);
+            } else if (TITLEBAR_STYLE === 'hybrid') {
+              // Main window, hybrid mode: native OS frame +
+              // claude.ai's in-app topbar via wco-shim.
+              //
+              // Why this shape: Linux X11 + frameless windows
+              // hits a Chromium-level implicit drag region at
+              // the top of the window that intercepts mouse
+              // events at the WM level. We've ruled out
+              // titleBarOverlay and titleBarStyle as the source
+              // (disabling either still produced unclickable
+              // topbar buttons). The drag region appears to be
+              // a Linux-X11 default for frame:false windows. With
+              // frame:true the OS handles dragging via the native
+              // titlebar and Chromium pushes no drag-region map,
+              // so the in-app topbar's buttons are clickable.
+              //
+              // Visual trade-off vs Windows: stacked layout — OS
+              // titlebar on top, in-app topbar below it. The
+              // buttons we care about (hamburger / sidebar /
+              // search / nav / Cowork ghost) all live in the
+              // in-app topbar via the shim's UA + matchMedia
+              // overrides. The shim's className intercept stays
+              // as belt-and-suspenders against the .draggable
+              // CSS rule still applying within the framed
+              // window's content area.
+              options.frame = true;
+              options.autoHideMenuBar = (MENU_BAR_MODE === 'auto');
+              delete options.titleBarStyle;
+              delete options.titleBarOverlay;
+              console.log('[Frame Fix] Hybrid mode: native frame + in-app topbar shim');
+            } else {
+              // Main window, hidden mode: frameless + Window Controls
+              // Overlay configured (matches Windows / macOS upstream).
+              // BROKEN ON LINUX X11 — topbar buttons not clickable
+              // because Chromium creates an implicit drag region for
+              // frame:false windows that intercepts mouse events at
+              // the WM level. Investigation chain in
+              // docs/learnings/linux-topbar-shim.md ruled out
+              // titleBarOverlay height and titleBarStyle:'hidden' as
+              // the source. The default is now 'hybrid'; this branch
+              // is kept for Wayland comparison and future probes.
+              options.frame = false;
+              options.titleBarStyle = 'hidden';
+              options.titleBarOverlay = {
+                color: '#1a1a1a',
+                symbolColor: '#ffffff',
+                height: 40,
+              };
+              console.log('[Frame Fix] Hidden mode (frame=false, '
+                + 'titleBarStyle=hidden, titleBarOverlay=object) — '
+                + 'topbar clicks broken on X11');
+            }
+          }
+          super(options);
+
+          if (process.platform === 'linux') {
+            // Hide menu bar after window creation (unless user wants it visible)
+            if (MENU_BAR_MODE !== 'visible') {
+              this.setMenuBarVisibility(false);
+            }
+
+            // Inject CSS for Linux scrollbar styling
+            this.webContents.on('did-finish-load', () => {
+              this.webContents.insertCSS(LINUX_CSS).catch(() => {});
+            });
+
+            // WCO diagnostic: probe Chromium's native Window Controls
+            // Overlay state on the main window webContents. Upstream
+            // electron/electron#41769 (June 2024) implements WCO on
+            // Linux X11; runtime probes (2026-04-29) show the API
+            // surface returns visible:true here while display-mode
+            // and env() vars don't match — partial implementation.
+            // env() extraction goes through a custom-property
+            // indirection because getPropertyValue('env(...)') is
+            // invalid; env() is only meaningful inside CSS values.
+            // Logs to stdout so the result lands in launcher.log.
+            // Only meaningful for non-popup main windows in hidden
+            // mode (the only path that requests WCO).
+            if (!popup && TITLEBAR_STYLE !== 'native') {
+              this.webContents.on('did-finish-load', () => {
+                this.webContents.executeJavaScript(`
+                  (() => {
+                    const wco = navigator.windowControlsOverlay;
+                    let rect = null;
+                    try {
+                      const r = wco && wco.getTitlebarAreaRect && wco.getTitlebarAreaRect();
+                      if (r) rect = { x: r.x, y: r.y, width: r.width, height: r.height };
+                    } catch (e) { /* ignore */ }
+                    const s = document.createElement('style');
+                    s.textContent = ':root{--probe-tbx:env(titlebar-area-x);--probe-tby:env(titlebar-area-y);--probe-tbw:env(titlebar-area-width);--probe-tbh:env(titlebar-area-height);}';
+                    document.head.appendChild(s);
+                    const cs = getComputedStyle(document.documentElement);
+                    const result = {
+                      visible: !!(wco && wco.visible),
+                      rect,
+                      media_wco: matchMedia('(display-mode: window-controls-overlay)').matches,
+                      media_standalone: matchMedia('(display-mode: standalone)').matches,
+                      media_browser: matchMedia('(display-mode: browser)').matches,
+                      env_x: cs.getPropertyValue('--probe-tbx').trim(),
+                      env_y: cs.getPropertyValue('--probe-tby').trim(),
+                      env_w: cs.getPropertyValue('--probe-tbw').trim(),
+                      env_h: cs.getPropertyValue('--probe-tbh').trim(),
+                      userAgent: navigator.userAgent,
+                      location: location.href,
+                    };
+                    s.remove();
+                    return JSON.stringify(result);
+                  })()
+                `).then((json) => {
+                  console.log('[WCO Diagnostic] main window webContents:', json);
+                }).catch((err) => {
+                  console.warn('[WCO Diagnostic] main window probe failed:', err.message);
+                });
+              });
+            }
+
+            // Quit on Ctrl+Q, but only when Claude has keyboard focus.
+            // Replaces a prior globalShortcut registration that grabbed
+            // the key system-wide and, on non-QWERTY layouts (e.g.
+            // AZERTY), swallowed other shortcuts like Ctrl+A because
+            // Electron matches globals by physical keycode. Fixes: #399
+            this.webContents.on('before-input-event', (event, input) => {
+              if (input.type !== 'keyDown') return;
+              if (!input.control) return;
+              if (input.alt || input.shift || input.meta) return;
+              if (input.key !== 'q' && input.key !== 'Q') return;
+              event.preventDefault();
+              electronModule.app.quit();
+            });
+
+            // In 'hidden' mode, suppress Alt toggle by re-hiding
+            // on every show event. In 'auto' mode, let
+            // autoHideMenuBar handle the toggle natively.
+            if (MENU_BAR_MODE === 'hidden') {
+              this.on('show', () => {
+                this.setMenuBarVisibility(false);
+              });
+            }
+
+            if (!popup) {
+              // Close-to-tray: intercept close on main windows and hide
+              // instead. app.on('before-quit') below sets the flag when
+              // the user picks an explicit quit path, so real quits still
+              // let the window actually close. Popups (Quick Entry,
+              // About) already dismiss via hide() in the upstream code;
+              // they never see close events, so they're unaffected.
+              // Fixes: #448
+              if (CLOSE_TO_TRAY) {
+                this.on('close', (e) => {
+                  if (!result.app._quittingIntentionally && !this.isDestroyed()) {
+                    e.preventDefault();
+                    this.hide();
+                  }
+                });
+              }
+
+              // Directly set child view bounds to match content size.
+              // This bypasses Chromium's stale LayoutManagerBase cache
+              // (only invalidated via _NET_WM_STATE atom changes, which
+              // KWin corner-snap/quick-tile never sets). Instead of
+              // monkey-patching getContentBounds() (which causes drag
+              // resize jitter at ~60Hz), we only act on discrete state
+              // changes. Fixes: #239
+              const fixChildBounds = () => {
+                if (this.isDestroyed()) return false;
+                const children = this.contentView?.children;
+                if (!children?.length) return false;
+                const [cw, ch] = this.getContentSize();
+                if (cw <= 0 || ch <= 0) return false;
+                const cur = children[0].getBounds();
+                if (cur.width !== cw || cur.height !== ch) {
+                  children[0].setBounds({ x: 0, y: 0, width: cw, height: ch });
+                  return true;
+                }
+                return false;
+              };
+
+              // Geometry settles in stages after state changes.
+              // Three passes at 0/16/150ms cover immediate, next-frame,
+              // and compositor-animation-complete timing.
+              const fixAfterStateChange = () => {
+                fixChildBounds();
+                setTimeout(fixChildBounds, 16);
+                setTimeout(fixChildBounds, 150);
+              };
+
+              // Suppresses resize/moved→fixAfterStateChange cascade
+              // during jiggle. Without this, each setSize triggers the
+              // resize handler, creating 6+ unnecessary timer callbacks.
+              let jiggling = false;
+
+              // Track interactive (user-drag) resizing. will-resize
+              // only fires for user-initiated drags, not programmatic
+              // setSize() or WM-initiated resizes. On Wayland compositors
+              // where will-resize may not fire, the guard stays false —
+              // safe because jiggle only triggers from armed pairs.
+              let userResizing = false;
+              let userResizeTimer = null;
+              this.on('will-resize', () => {
+                userResizing = true;
+                if (userResizeTimer) clearTimeout(userResizeTimer);
+                userResizeTimer = setTimeout(() => { userResizing = false; }, 300);
+              });
+
+              // Debounced 1px jiggle for workspace switches where tile
+              // size is unchanged (bounds match but compositor cache is
+              // stale). Only called from armed-pair handlers, never
+              // from resize/maximize. Same pattern as ready-to-show
+              // but debounced and guarded.
+              // INVARIANT: debounce (100ms) must exceed jiggle duration
+              // (50ms) to prevent overlapping jiggles on rapid workspace
+              // switching. Do not reduce debounce below jiggle timeout.
+              let jiggleTimer = null;
+              const jiggleIfStale = () => {
+                if (jiggleTimer) clearTimeout(jiggleTimer);
+                jiggleTimer = setTimeout(() => {
+                  jiggleTimer = null;
+                  if (this.isDestroyed() || userResizing) return;
+                  if (!fixChildBounds()) {
+                    jiggling = true;
+                    const [w, h] = this.getSize();
+                    this.setSize(w + 1, h);
+                    setTimeout(() => {
+                      if (!this.isDestroyed()) {
+                        this.setSize(w, h);
+                        fixChildBounds();
+                      }
+                      jiggling = false;
+                    }, 50);
+                  }
+                }, 100);
+              };
+
+              for (const evt of ['maximize', 'unmaximize',
+                'enter-full-screen', 'leave-full-screen']) {
+                this.on(evt, fixAfterStateChange);
+              }
+
+              // KWin corner-snap/quick-tile emits 'moved' but not
+              // 'maximize'/'unmaximize'. Guard with a size-change check
+              // so normal window drags (position-only) are ignored.
+              let lastSize = [0, 0];
+              this.on('moved', () => {
+                if (this.isDestroyed() || jiggling) return;
+                const [w, h] = this.getSize();
+                if (w !== lastSize[0] || h !== lastSize[1]) {
+                  lastSize = [w, h];
+                  fixAfterStateChange();
+                }
+              });
+
+              // Tiling WMs (Hyprland, i3, sway) emit 'resize' on
+              // workspace switches with stale getContentBounds()
+              // cache. The size-change guard in fixChildBounds()
+              // prevents unnecessary work during drag resize.
+              // Fixes: #323
+              this.on('resize', () => {
+                if (!jiggling) fixAfterStateChange();
+              });
+
+              // ready-to-show fires once per window lifecycle
+              this.once('ready-to-show', () => {
+                if (MENU_BAR_MODE !== 'visible') {
+                  this.setMenuBarVisibility(false);
+                }
+                // One-time jiggle for initial layout. Fixes: #84
+                const [w, h] = this.getSize();
+                this.setSize(w + 1, h + 1);
+                setTimeout(() => {
+                  if (this.isDestroyed()) return;
+                  this.setSize(w, h);
+                  fixAfterStateChange();
+                }, 50);
+              });
+
+              // Tiling WMs signal workspace switches via blur/focus
+              // (Hyprland) or hide/show pairs. Jiggle only fires
+              // when fixChildBounds() finds no mismatch (stale
+              // compositor cache on same-size workspace switch).
+              // Fixes: #323
+              const armPair = (armEvt, fireEvt) => {
+                let armed = false;
+                this.on(armEvt, () => { armed = true; });
+                this.on(fireEvt, () => {
+                  if (armed) {
+                    armed = false;
+                    jiggleIfStale();
+                  }
+                });
+              };
+
+              this.on('focus', () => {
+                this.flashFrame(false); // Fixes: #149
+              });
+              armPair('blur', 'focus');
+              armPair('hide', 'show');
+            }
+
+            console.log('[Frame Fix] Linux patches applied');
+          }
+        }
+      };
+
+      // Copy static methods and properties from original
+      for (const key of Object.getOwnPropertyNames(OriginalBrowserWindow)) {
+        if (key !== 'prototype' && key !== 'length' && key !== 'name') {
+          try {
+            const descriptor = Object.getOwnPropertyDescriptor(OriginalBrowserWindow, key);
+            if (descriptor) {
+              Object.defineProperty(PatchedBrowserWindow, key, descriptor);
+            }
+          } catch (e) {
+            // Ignore errors for non-configurable properties
+          }
+        }
+      }
+
+      // Intercept Menu.setApplicationMenu to hide menu bar on Linux.
+      // In 'hidden' mode, force-hide after every menu update.
+      // In 'auto' mode, only hide initially (autoHideMenuBar handles
+      // Alt toggle — re-hiding here would break that). Fixes: #321
+      const originalSetAppMenu = OriginalMenu.setApplicationMenu.bind(OriginalMenu);
+      patchedSetApplicationMenu = function(menu) {
+        console.log('[Frame Fix] Intercepting setApplicationMenu');
+        originalSetAppMenu(menu);
+        if (process.platform === 'linux' && MENU_BAR_MODE === 'hidden') {
+          for (const win of PatchedBrowserWindow.getAllWindows()) {
+            if (win.isDestroyed()) continue;
+            win.setMenuBarVisibility(false);
+          }
+          console.log('[Frame Fix] Menu bar hidden on all windows');
+        }
+      };
+
+      // Arm the close-to-tray flag on every real quit path
+      // (app.quit() from Ctrl+Q, tray Quit, cmd+Q, SIGTERM). The
+      // BrowserWindow close handler above checks this flag to
+      // decide whether to hide or actually close. Harmless when
+      // CLOSE_TO_TRAY is off (the close handler is never attached).
+      if (CLOSE_TO_TRAY) {
+        result.app.on('before-quit', () => {
+          result.app._quittingIntentionally = true;
+        });
+      }
+
+      // WCO diagnostic console mirror + global Ctrl+Q.
+      //
+      // The console mirror forwards [WCO Diagnostic] / [WCO Shim] /
+      // [Drag Shim] messages from any webContents (including the
+      // BrowserView that hosts claude.ai) back to stdout so probes
+      // run from preload land in launcher.log alongside the main
+      // window probe. Filtered prefixes avoid mirroring claude.ai's
+      // noisy console.
+      //
+      // The Ctrl+Q handler is replicated here from the per-window
+      // setup above because before-input-event only fires on the
+      // webContents that has keyboard focus. The BrowserView has
+      // its own webContents that takes focus over the main window,
+      // so a handler on the main window alone never sees keypresses
+      // when the BrowserView is focused (the typical case). Adding
+      // it to every webContents covers main + BrowserView + popups.
+      // Linux-only because the per-window handler above is
+      // Linux-only (and macOS has Cmd+Q natively).
+      if (process.platform === 'linux') {
+        result.app.on('web-contents-created', (_evt, wc) => {
+          if (TITLEBAR_STYLE !== 'native') {
+            wc.on('console-message', (event) => {
+              const msg = (event && event.message) || '';
+              if (msg.startsWith('[WCO Diagnostic]')
+                || msg.startsWith('[WCO Shim]')
+                || msg.startsWith('[Drag Shim]')) {
+                console.log('[BrowserView]', msg);
+              }
+            });
+          }
+          wc.on('before-input-event', (event, input) => {
+            if (input.type !== 'keyDown') return;
+            if (!input.control) return;
+            if (input.alt || input.shift || input.meta) return;
+            if (input.key !== 'q' && input.key !== 'Q') return;
+            event.preventDefault();
+            result.app.quit();
+          });
+        });
+      }
+
+      // Route app.{get,set}LoginItemSettings through XDG Autostart on Linux.
+      // Electron's openAtLogin is a no-op on Linux (electron/electron#15198),
+      // which both prevents the app's "Run on startup" toggle from
+      // persisting and makes isStartupOnLoginEnabled() return undefined
+      // (the app's IPC handler then fails boolean validation). Writing
+      // $XDG_CONFIG_HOME/autostart/claude-desktop.desktop is honoured by
+      // every mainstream DE (GNOME/KDE/XFCE/Cinnamon/MATE/LXQt). Fixes: #128
+      if (process.platform === 'linux') {
+        const fs = require('fs');
+        const os = require('os');
+
+        // XDG Base Directory Spec §3: autostart lives under $XDG_CONFIG_HOME/autostart,
+        // falling back to ~/.config/autostart only when the env var is unset or empty.
+        // Home-manager / dotfile setups relocate this; writing unconditionally to
+        // ~/.config would drop the entry in the wrong place for those users.
+        const xdgConfigHome = process.env.XDG_CONFIG_HOME && process.env.XDG_CONFIG_HOME.trim()
+          ? process.env.XDG_CONFIG_HOME
+          : path.join(os.homedir(), '.config');
+        const autostartDir = path.join(xdgConfigHome, 'autostart');
+        const autostartPath = path.join(autostartDir, 'claude-desktop.desktop');
+
+        // Desktop Entry Exec= escaping (freedesktop.org Desktop Entry Spec):
+        // quote args containing whitespace or reserved chars; double-backslash
+        // and escape inner quotes inside the quoted form.
+        const escapeExecArg = (s) => {
+          const reserved = /[\s"`$\\]/;
+          if (!reserved.test(s)) return s;
+          return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+        };
+
+        // Resolve the Exec/Icon targets at toggle time (not module load),
+        // so an AppImage run picks up process.env.APPIMAGE — the absolute
+        // path to the current .AppImage, set by the AppImage runtime.
+        // Without this, AppImage users who haven't integrated via
+        // AppImageLauncher get a file that launches a `claude-desktop`
+        // binary not on $PATH, silently failing at next login. Icon=
+        // accepts an absolute file path; DEs fall back gracefully when
+        // they can't extract the embedded icon. For deb/RPM/Nix,
+        // 'claude-desktop' resolves via the launcher shim and the
+        // hicolor icon name matches scripts/packaging/{deb,rpm}.sh.
+        const resolveAutostartTarget = () => {
+          if (process.env.APPIMAGE) {
+            return {
+              exec: escapeExecArg(process.env.APPIMAGE),
+              icon: escapeExecArg(process.env.APPIMAGE),
+            };
+          }
+          return { exec: 'claude-desktop', icon: 'claude-desktop' };
+        };
+
+        // StartupWMClass matches the value set by scripts/packaging/{deb,rpm}.sh
+        // so DEs group an autostarted window with user-launched instances
+        // under the same taskbar / dock entry.
+        const buildAutostartContent = () => {
+          const { exec, icon } = resolveAutostartTarget();
+          return `[Desktop Entry]
+Type=Application
+Name=Claude
+Exec=${exec}
+Icon=${icon}
+StartupWMClass=Claude
+Terminal=false
+X-GNOME-Autostart-enabled=true
+`;
+        };
+
+        const origGetLoginItemSettings = result.app.getLoginItemSettings.bind(result.app);
+        result.app.getLoginItemSettings = function(...args) {
+          const settings = origGetLoginItemSettings(...args);
+          const enabled = fs.existsSync(autostartPath);
+          settings.openAtLogin = enabled;
+          // executableWillLaunchAtLogin is Windows-only in Electron and
+          // comes back undefined on Linux; coerce to boolean so the app's
+          // IPC handler's typeof === 'boolean' validation passes.
+          settings.executableWillLaunchAtLogin = enabled;
+          return settings;
+        };
+
+        const origSetLoginItemSettings = result.app.setLoginItemSettings.bind(result.app);
+        result.app.setLoginItemSettings = function(opts = {}) {
+          // Intentionally ignore opts.path / opts.name: process.execPath on
+          // Electron is the electron binary itself, not the launcher script
+          // that sets up ELECTRON_FORCE_IS_PACKAGED / ozone flags / orphan
+          // cleanup. Honouring opts.path would write a broken autostart
+          // entry that skips all of that. resolveAutostartTarget() derives
+          // the right Exec line from the current runtime instead.
+          if (typeof opts.openAtLogin === 'boolean') {
+            try {
+              fs.mkdirSync(autostartDir, { recursive: true });
+              if (opts.openAtLogin) {
+                fs.writeFileSync(autostartPath, buildAutostartContent());
+                console.log('[Autostart] wrote', autostartPath);
+              } else {
+                try {
+                  fs.unlinkSync(autostartPath);
+                  console.log('[Autostart] removed', autostartPath);
+                } catch (err) {
+                  if (err.code !== 'ENOENT') throw err;
+                }
+              }
+            } catch (err) {
+              console.error('[Autostart] failed to toggle', autostartPath, err);
+            }
+          }
+          return origSetLoginItemSettings(opts);
+        };
+        console.log('[Autostart] XDG Autostart shim installed');
+      }
+
+      // Detect in-place package upgrade (dpkg/rpm rename-replace of
+      // app.asar) and offer a restart, since post-swap window loads
+      // mix v(N+1) HTML/assets with the v(N) IPC/preload still in
+      // memory. AppImage and Nix are immune (immutable running file);
+      // the watcher just no-ops there. Fixes: see PR #564.
+      const armUpgradeWatcher = () => {
+        if (process.platform !== 'linux') return;
+        const fs = require('fs');
+        const asarPath = path.join(process.resourcesPath, 'app.asar');
+        let baseline;
+        try { baseline = fs.statSync(asarPath); } catch { return; }
+
+        let notified = false;
+        let debounceTimer = null;
+        const promptRestart = () => {
+          if (notified) return;
+          let cur;
+          try { cur = fs.statSync(asarPath); } catch { return; }
+          // ino catches rename-replace; mtime catches in-place
+          // rewrite. Either is sufficient on its own for dpkg/rpm,
+          // but checking both keeps us honest against odd packagers.
+          if (cur.ino === baseline.ino
+            && cur.mtimeMs === baseline.mtimeMs) return;
+          notified = true;
+          console.log('[Frame Fix] app.asar replaced — prompting restart');
+          // whenReady() resolves immediately if already ready, so no
+          // isReady() branch needed. Linux libnotify ignores
+          // Notification.actions (macOS-only), so whole-notification
+          // click is the only restart affordance.
+          result.app.whenReady().then(() => {
+            try {
+              const n = new result.Notification({
+                title: 'Claude Desktop has been updated',
+                body: 'Click to restart and apply the update.',
+              });
+              n.on('click', () => {
+                result.app.relaunch();
+                result.app.quit();
+              });
+              n.show();
+            } catch (err) {
+              console.warn('[Frame Fix] Restart notification failed:',
+                err.message);
+            }
+          });
+        };
+
+        // Watch the parent dir, not the file: file-level fs.watch
+        // loses the inode across rename-replace. Filename filter
+        // ignores unrelated activity in the resources dir; 5s
+        // debounce covers dpkg's .dpkg-new → rename dance and
+        // similar multi-stage swaps in rpm/Nix.
+        const watcher = fs.watch(path.dirname(asarPath),
+          (_evt, filename) => {
+            if (filename !== 'app.asar') return;
+            if (debounceTimer) clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(promptRestart, 5000);
+          });
+        // App's other handles drive process lifetime; the watcher
+        // shouldn't keep the loop alive on its own.
+        watcher.unref();
+        console.log('[Frame Fix] Upgrade watcher armed:', asarPath);
+      };
+      try { armUpgradeWatcher(); } catch (err) {
+        console.warn('[Frame Fix] Upgrade watcher failed to arm:',
+          err.message);
+      }
+
+      console.log('[Frame Fix] Patches built successfully');
+    }
+
+    // Return a Proxy that intercepts property access on the electron module.
+    // This is needed because electron's exports use non-configurable getters,
+    // so we cannot directly reassign module.BrowserWindow.
+    return new Proxy(result, {
+      get(target, prop, receiver) {
+        if (prop === 'BrowserWindow') return PatchedBrowserWindow;
+        if (prop === 'Menu') {
+          // Return a proxy for Menu that intercepts setApplicationMenu
+          const originalMenu = target.Menu;
+          return new Proxy(originalMenu, {
+            get(menuTarget, menuProp) {
+              if (menuProp === 'setApplicationMenu') return patchedSetApplicationMenu;
+              return Reflect.get(menuTarget, menuProp);
+            }
+          });
+        }
+        return Reflect.get(target, prop, receiver);
+      }
+    });
+  }
+
+  return result;
+};
+
+// ================================================================
+// Windows Cowork daemon auto-start
+// ================================================================
+if (process.platform === 'win32') {
+  (function () {
+    try {
+      var _cp = require('child_process');
+      var _fs = require('fs');
+      var _path = require('path');
+      var _os = require('os');
+
+      var _daemonPath = _path.join(
+        process.resourcesPath || _path.dirname(__dirname),
+        'app.asar.unpacked', 'cowork-vm-service-win.js'
+      );
+      if (!_fs.existsSync(_daemonPath)) {
+        console.warn('[Cowork] Windows daemon not found at', _daemonPath);
+        return;
+      }
+
+      var _logDir = _path.join(
+        process.env.USERPROFILE || _os.homedir(),
+        '.config', 'Claude', 'logs'
+      );
+      var _stdio = 'ignore';
+      try {
+        _fs.mkdirSync(_logDir, { recursive: true });
+        var _logFd = _fs.openSync(
+          _path.join(_logDir, 'cowork_vm_daemon.log'), 'a'
+        );
+        _stdio = ['ignore', _logFd, _logFd, 'ipc'];
+      } catch (_) {}
+
+      var _child = _cp.fork(_daemonPath, [], {
+        detached: true,
+        stdio: _stdio,
+        env: Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: '1' }),
+      });
+
+      _child.on('error', function (err) {
+        try { console.error('[Cowork] daemon spawn error:', err.message); } catch (_) {}
+      });
+
+      _child.unref();
+      console.log('[Cowork] Windows daemon started, pid=' + _child.pid);
+    } catch (e) {
+      try { console.error('[Cowork] daemon auto-start failed:', e && e.message); } catch (_) {}
+    }
+  })();
+}
