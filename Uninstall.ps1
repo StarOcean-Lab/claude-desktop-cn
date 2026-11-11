@@ -57,6 +57,10 @@ try {
             Remove-Item -LiteralPath $appDir -Recurse -Force
             Write-Ok "Removed portable app: $appDir"
         }
+        $launcher = Join-Path $InstallDir 'Launch-Claude.vbs'
+        if (Test-Path -LiteralPath $launcher) {
+            Remove-Item -LiteralPath $launcher -Force
+        }
 
         $deleteData = $PurgeData
         if (-not $deleteData -and -not $NonInteractive) {

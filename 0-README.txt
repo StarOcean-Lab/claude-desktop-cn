@@ -9,7 +9,7 @@ Claude Desktop for Windows 中国版 - 速查卡
 1) 便携版（推荐先试）
    - 无需管理员
    - Chat / Code 可用，Cowork 不可用
-   - 数据在 <安装目录>\data
+   - 数据在 <安装目录>\data（用桌面快捷方式启动）
    - 双击 Install.bat，选择 1
 
 2) MSIX 版
@@ -49,7 +49,7 @@ SHA-256: C0AC245C9AD458ABD550BCBF2A0B34C75C51173A27F3C870602E5452CF3484F1
 
 数据/配置
 ---------
-  便携版数据: <安装目录>\data
+  便携版数据: <安装目录>\data（Launch-Claude.vbs 设置 CLAUDE_USER_DATA_DIR）
   MSIX 数据:  %LOCALAPPDATA%\Claude-3p
   3P 策略:    HKCU\SOFTWARE\Policies\Claude
   安装日志:   install.log

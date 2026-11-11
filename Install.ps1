@@ -97,9 +97,9 @@ try {
                 -IconPath $icon
         } else {
             New-DesktopShortcut `
-                -Target (Join-Path $InstallDir 'app\claude.exe') `
-                -Arguments "--user-data-dir=`"$(Join-Path $InstallDir 'data')`"" `
-                -WorkingDirectory (Join-Path $InstallDir 'app') `
+                -Target (Join-Path $env:SystemRoot 'System32\wscript.exe') `
+                -Arguments "`"$(Join-Path $InstallDir 'Launch-Claude.vbs')`"" `
+                -WorkingDirectory $InstallDir `
                 -IconPath $icon
         }
     }

@@ -12,7 +12,8 @@ All notable changes to this project are documented here. The format follows
 - Installer for the official Claude Desktop Windows MSIX `3.6556.2` (x64),
   with pinned size and SHA-256 verification.
 - Portable mode: extracts the official `app/` tree, isolates user data with
-  `--user-data-dir`, and creates a desktop shortcut without admin rights.
+  `CLAUDE_USER_DATA_DIR` + `--user-data-dir` through `Launch-Claude.vbs`, and
+  creates a desktop shortcut without admin rights.
 - MSIX mode: installs the official package (Cowork support) and registers a
   desktop shortcut through the `shell:AppsFolder` launcher.
 - Official 3P configuration through `HKCU\SOFTWARE\Policies\Claude`:

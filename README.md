@@ -18,7 +18,7 @@
 
 | 模式 | 需要管理员 | Chat | Code | Cowork | 数据位置 |
 |---|---|---|---|---|---|
-| **便携版** | 否 | 可用（走网关） | 可用 | 不可用（官方要求 MSIX + Hyper-V） | 安装目录下 `data\` |
+| **便携版** | 否 | 可用（走网关） | 可用 | 不可用（官方要求 MSIX + Hyper-V） | 安装目录下 `data\`（用快捷方式启动） |
 | **MSIX 版** | 通常需要（侧载/首次安装） | 可用（走网关） | 可用 | 可用（需 Hyper-V / 虚拟机平台） | `%LOCALAPPDATA%\Claude-3p` |
 
 便携版解包官方 MSIX 到普通目录，用 `--user-data-dir` 隔离数据；Cowork 的 VM 服务需要 Windows 包身份、HCS/Hyper-V 和系统服务权限，便携版不再伪造 MSIX。
@@ -128,7 +128,9 @@ dism /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
 
 ## 数据与隐私
 
-- 便携版：`<安装目录>\data\`，由 `--user-data-dir` 指定；
+- 便携版：`<安装目录>\data\`。快捷方式通过 `Launch-Claude.vbs` 设置
+  `CLAUDE_USER_DATA_DIR`，会话、配置库和日志都在这里；直接运行
+  `app\claude.exe` 会回落到 `%LOCALAPPDATA%\Claude-3p`；
 - MSIX 版：`%LOCALAPPDATA%\Claude-3p`；
 - 3P 策略：`HKCU\SOFTWARE\Policies\Claude`；
 - API Key 存在 HKCU 策略值里，只有当前 Windows 用户可读；
@@ -160,7 +162,7 @@ dism /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
 ├── Set-Gateway.bat / Set-Gateway.ps1 # 更新网关
 ├── Uninstall.bat / Uninstall.ps1     # 卸载
 ├── lib/Common.ps1                    # 下载、校验、策略、解包、快捷方式
-├── assets/claude-logo.ico            # 快捷方式图标
+├── assets/                           # 图标 + Launch-Claude.vbs
 ├── docs/legacy-patches.md            # 旧版补丁说明（已移除）
 └── CHANGELOG.md
 ```
@@ -170,7 +172,8 @@ dism /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
 ```text
 <安装目录>\
 ├── app\              # 官方 MSIX 的 app/ 内容（claude.exe、resources、ion-dist）
-└── data\             # 便携版 userData
+├── data\             # 便携版 userData（会话/配置/日志）
+└── Launch-Claude.vbs # 设置 CLAUDE_USER_DATA_DIR 后启动 app\claude.exe
 ```
 
 ## 旧版补丁为什么删除

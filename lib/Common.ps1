@@ -479,6 +479,12 @@ function Install-Portable {
         Get-ChildItem -LiteralPath $srcApp -Force |
             Copy-Item -Destination $appDir -Recurse -Force
         New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+        $launcherSrc = Join-Path $script:RepoRoot 'assets\Launch-Claude.vbs'
+        if (-not (Test-Path -LiteralPath $launcherSrc)) {
+            throw 'assets\Launch-Claude.vbs is missing.'
+        }
+        Copy-Item -LiteralPath $launcherSrc `
+            -Destination (Join-Path $InstallDir 'Launch-Claude.vbs') -Force
         Write-Ok "Portable app installed: $appDir"
     } finally {
         Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
@@ -650,6 +656,8 @@ function Test-Installation {
             'app\resources\ion-dist\index.html exists'
         Check-Item (Test-Path -LiteralPath (Join-Path $InstallDir 'data')) `
             'portable data directory exists'
+        Check-Item (Test-Path -LiteralPath (Join-Path $InstallDir 'Launch-Claude.vbs')) `
+            'portable launcher exists'
     }
     Check-Item ((Get-PolicyValue 'inferenceProvider') -eq 'gateway') `
         '3P policy: inferenceProvider=gateway'
@@ -681,6 +689,7 @@ function Start-Claude {
 
     $exe = Join-Path $InstallDir 'app\claude.exe'
     $data = Join-Path $InstallDir 'data'
+    $env:CLAUDE_USER_DATA_DIR = $data
     Start-Process -FilePath $exe `
         -ArgumentList "--user-data-dir=`"$data`"" `
         -WorkingDirectory (Join-Path $InstallDir 'app')
