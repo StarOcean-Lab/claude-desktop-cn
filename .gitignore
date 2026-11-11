@@ -19,3 +19,15 @@ node_modules/
 
 # Logs
 *.log
+
+# Official Windows MSIX (downloaded at install time)
+*.msix
+*.msixbundle
+
+# Local build/extract output
+prebuilt/
+app/
+data/
+cache/
+install.json
+policy-backup.json

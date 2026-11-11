@@ -1,112 +1,65 @@
-═══════════════════════════════════════════════════════════════════════
-   Claude Desktop · Windows 3p Portable 部署 Kit
-═══════════════════════════════════════════════════════════════════════
+Claude Desktop for Windows 中国版 - 速查卡
+==========================================
 
-本包含完整部署所需的全部文件 + 实证修复 patches。把整个包给同事，
-他照着 Claude-Desktop-Windows-完整部署指南.md 第 0 章 Quick Start
-12 步走 30 分钟即可跑通。
+新版：官方 Windows MSIX 3.6556.2 + 官方 3P 配置
+旧版：1.6608.2 Linux fork + app.asar 补丁（已删除）
 
-──────────────────────────────────────────────────────────────────────
-内容清单
-──────────────────────────────────────────────────────────────────────
+两种模式
+--------
+1) 便携版（推荐先试）
+   - 无需管理员
+   - Chat / Code 可用，Cowork 不可用
+   - 数据在 <安装目录>\data
+   - 双击 Install.bat，选择 1
 
-Claude-Desktop-Windows-完整部署指南.md      主指南 (925 行 / ~40 KB)
-                                            按 §0 Quick Start 一条龙做
+2) MSIX 版
+   - 安装官方 MSIX，支持 Cowork
+   - 需要侧载/管理员；Cowork 需要 Hyper-V / 虚拟机平台
+   - 数据在 %LOCALAPPDATA%\Claude-3p
+   - 双击 Install.bat，选择 2
 
-patches/
-├── claude-native-stub.js                   核心 stub: Linux JS stub
-│                                           + readRegistryValues 桥接
-│                                           解决"无窗口/空白窗口"两大故障
-│
-├── cowork-bypass-snippet.js                Cowork tab 解锁 (3 块 patch)
-│                                           - process.windowsStore=true
-│                                           - NODE_ENV=production
-│                                           - delete process.env.ANTHROPIC_*
-│
-├── ccd-env-passthrough.js                  Code tab spawn hook
-│                                           (仅当 Cowork/Code 用不同 gateway)
-│
-├── frame-fix-wrapper-full-patches.js       一键合并版 wrapper
-│                                           = aaddrick wrapper
-│                                           + cowork-bypass + ccd-passthrough
-│
-├── enterprise-policies.example.json        可选 override 模板
-│                                           默认配置走 ~/.claude/settings.json
-│                                           只在需要 Cowork/CLI 双网关隔离时用
-│
-├── native-modules-windows-x64.zip          Electron 41.5.0 ABI 兼容的
-│                                           node-pty 4 件套（520 KB）
-│                                           Code tab 必需
-│
-└── repack-asar.ps1                         一键 repack 脚本
+安装前
+------
+- 64 位 Windows 10 19041+ / Windows 11
+- VC++ 2015-2022 x64 Redistributable
+- 一个实现 Anthropic Messages API 的网关
+  （POST /v1/messages，支持流式 + tool use）
+- 网关基地址填根地址，不要带 /v1/messages
 
-prebuilt/
-├── app.asar                                已经 patched 好的 app.asar
-│                                           (无需自己跑 §3.3 整个 patch
-│                                            流程，跳过去用现成的)
-├── app.asar.unpacked/                      含 native modules 的运行时目录
-│                                           (含 cowork-vm-service.js +
-│                                            conpty.node + winpty 三件套)
-└── ion-dist/                               SPA UI 资源 (~100 MB)
-                                            app:// 协议从这里加载页面;
-                                            缺失会导致启动报
-                                            "ERR_FILE_NOT_FOUND
-                                             app://localhost/epitaxy"
+手动下载 MSIX
+-------------
+https://downloads.claude.ai/releases/win32/x64/3.6556.2/Claude-20c019a1e61fa5b687616af57d31f97bb3181723.msix
+SHA-256: C0AC245C9AD458ABD550BCBF2A0B34C75C51173A27F3C870602E5452CF3484F1
+大小:    284230330 bytes
 
-──────────────────────────────────────────────────────────────────────
-极速部署（用 prebuilt/ 跳过 patch 流程，5 分钟）
-──────────────────────────────────────────────────────────────────────
+指定本地文件：
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1 `
+    -Mode Portable -MsixPath .\Claude.msix
 
-1. 装 VC++ 2015-2022 x64 Redistributable
-   下载: https://aka.ms/vs/17/release/vc_redist.x64.exe
+切换网关
+--------
+  Set-Gateway.bat
+  （读取 %USERPROFILE%\.claude\settings.json 或交互输入）
+  完全退出并重启 Claude Desktop。
 
-2. 装 npm Claude Code CLI (Code tab 必需)
-   npm install -g @anthropic-ai/claude-code
+卸载
+----
+  Uninstall.bat
+  （默认保留聊天数据；-PurgeData 才删除）
 
-3. 下载 Electron 41.5.0 win32-x64
-   https://github.com/electron/electron/releases/download/v41.5.0/electron-v41.5.0-win32-x64.zip
-   解压到 D:\claude-desktop-portable\
-   把 electron.exe 改名为 Claude.exe
+数据/配置
+---------
+  便携版数据: <安装目录>\data
+  MSIX 数据:  %LOCALAPPDATA%\Claude-3p
+  3P 策略:    HKCU\SOFTWARE\Policies\Claude
+  安装日志:   install.log
 
-4. 拷贝 prebuilt/app.asar 到 D:\claude-desktop-portable\resources\app.asar
-   拷贝 prebuilt/app.asar.unpacked/ 到 D:\claude-desktop-portable\resources\app.asar.unpacked\
-   拷贝 prebuilt/ion-dist/         到 D:\claude-desktop-portable\resources\ion-dist\
-                                    (必需; 否则启动时 app://localhost/ 会 ERR_FILE_NOT_FOUND)
+故障排查
+--------
+- 3P 配置错误：检查 URL/Key/AuthScheme，运行 Set-Gateway.bat
+- 模型为空：网关不支持 /v1/models，用 -Models 显式列出
+- Cowork msix_required：便携版不支持，改用 MSIX 版
+- 0x80073CFF：系统禁止侧载，启用“允许安装受信任的应用”
+- Code 首次慢：官方要下载约 106 MB 的 Claude Code CLI
 
-5. 配 ~/.claude/settings.json (Cowork + CLI 共用同一份配置)
-   {
-     "env": {
-       "ANTHROPIC_BASE_URL": "https://your.gateway/anthropic",
-       "ANTHROPIC_AUTH_TOKEN": "sk-..."
-     }
-   }
-   (双 gateway 隔离场景才需要 enterprise-policies.json，见主指南)
-
-6. 拷贝 npm 装的 claude.exe 到 CCD 缓存路径
-   $ver = '2.1.128'
-   $dir = "$env:LOCALAPPDATA\Claude-3p\claude-code\$ver"
-   New-Item -ItemType Directory -Path $dir -Force
-   Copy-Item "$(npm root -g)\@anthropic-ai\claude-code\bin\claude.exe" "$dir\claude.exe" -Force
-   New-Item -ItemType File -Path "$dir\.verified" -Force
-
-7. 双击 D:\claude-desktop-portable\Claude.exe → 应见聊天界面
-
-详细步骤 / 故障排查 / 双 gateway 配置 / 升级流程 →
-全部在主指南里。
-
-──────────────────────────────────────────────────────────────────────
-不能解锁的功能（已知限制）
-──────────────────────────────────────────────────────────────────────
-
-✗ Chat tab               需要 Anthropic 账号登录 claude.ai (国内不可达)
-✗ Computer Use           需要 macOS Swift addon
-✗ 沙箱隔离 (Bwrap/KVM)  HostBackend 模式无隔离；有 WSL2 可后续添加
-
-✓ Cowork 完整功能（shell 命令执行、ripgrep 搜索、文件读写、任务管理）
-  (2026-05-13: 新增 Windows HostBackend daemon 支持)
-✓ Code tab 完整 Claude Code (含 MCP servers)
-✓ 多 gateway 隔离 (Cowork=DeepSeek, Code=right.codes 等)
-
-主指南 §8 有完整对比表。
-
-═══════════════════════════════════════════════════════════════════════
+更多说明见 README.md 和 docs/legacy-patches.md。
