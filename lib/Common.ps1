@@ -80,6 +80,15 @@ function Test-IsAdmin {
     }
 }
 
+function Test-VcRedist {
+    try {
+        $key = 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+        return ((Get-ItemProperty -Path $key -ErrorAction Stop).Installed -eq 1)
+    } catch {
+        return $false
+    }
+}
+
 function Get-MsixCachePath {
     return Join-Path $script:StateDir (
         "cache\Claude-$($script:MsixVersion)-x64.msix")

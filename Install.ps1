@@ -38,6 +38,12 @@ try {
         -ForegroundColor DarkGray
     Write-Host ''
 
+    if (-not (Test-VcRedist)) {
+        Write-Warn ('未检测到 VC++ 2015-2022 x64 Redistributable。' +
+            '如果启动时报缺少 vcruntime140.dll，请安装：' +
+            'https://aka.ms/vs/17/release/vc_redist.x64.exe')
+    }
+
     if (-not $PSBoundParameters.ContainsKey('Mode')) {
         if ($NonInteractive) {
             $Mode = 'Portable'
