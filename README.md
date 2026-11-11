@@ -6,7 +6,7 @@
 
 ## 为什么重写
 
-旧版基于 Claude Desktop `1.6608.2` 的 Linux 构建，打了 5 个补丁（`claude-native` stub、Cowork bypass、CCD 环境透传、探针修复、WSL HostBackend）。2026-10 的官方 Windows 版已经到 `3.6556.2`，并且原生支持 **3P（third-party inference）**：
+旧版基于 Claude Desktop `1.6608.2` 的 Linux 构建，打了 5 个补丁（`claude-native` stub、Cowork bypass、CCD 环境透传、探针修复、WSL HostBackend）。2026-11-11 的官方 Windows 版已经到 `5.1231.2`，并且原生支持 **3P（third-party inference）**：
 
 - 官方从 `HKCU\SOFTWARE\Policies\Claude` 读取 3P 配置；
 - Chat / Code / Cowork 都走同一套官方推理路径；
@@ -21,7 +21,7 @@
 | **便携版** | 否 | 可用（走网关） | 可用 | 不可用（官方要求 MSIX + Hyper-V） | 安装目录下 `data\`（用快捷方式启动） |
 | **MSIX 版** | 通常需要（侧载/首次安装） | 可用（走网关） | 可用 | 可用（需 Hyper-V / 虚拟机平台） | `%LOCALAPPDATA%\Claude-3p` |
 
-便携版解包官方 MSIX 到普通目录，用 `--user-data-dir` 隔离数据；Cowork 的 VM 服务需要 Windows 包身份、HCS/Hyper-V 和系统服务权限，便携版不再伪造 MSIX。
+便携版解包官方 MSIX 到普通目录，用 `CLAUDE_USER_DATA_DIR` + `--user-data-dir` 隔离数据；Cowork 的 VM 服务需要 Windows 包身份、HCS/Hyper-V 和系统服务权限，便携版不再伪造 MSIX。
 
 ## 快速开始
 
@@ -31,24 +31,30 @@
    - `1` 便携版：输入安装目录（默认 `%LOCALAPPDATA%\Programs\Claude-CN`）。
    - `2` MSIX 版：安装官方包，适合需要 Cowork 的机器。
 4. 输入网关根地址、API Key，可选模型 ID（逗号分隔，留空则自动发现）。
-5. 安装器会下载/校验官方 MSIX（284 MB，SHA-256 固定），安装，写 3P 策略，并做自检。
+5. 安装器会下载/校验官方 MSIX（约 298 MB，SHA-256 固定），安装，写 3P 策略，并做自检。
 
-安装器会先找仓库目录下的 `Claude*.msix`，再找 `%LOCALAPPDATA%\Claude-CN\cache`，最后才下载。手动下载的文件放在项目根目录即可。
+安装器会先找项目目录、`Downloads`、`下载` 和桌面上的 `Claude*.msix`，再找 `%LOCALAPPDATA%\Claude-CN\cache`，最后才下载。手动下载的文件放在这些位置之一即可。
 
-安装器优先用 BITS 下载；如果网络慢，可以手动下载后指定本地文件：
+安装器优先走国内镜像（`gh-proxy` / GitHub release），失败后回退官方 `downloads.claude.ai`；如果网络慢，可以手动下载后指定本地文件：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1 `
   -Mode Portable `
-  -MsixPath .\Claude-20c019a1e61fa5b687616af57d31f97bb3181723.msix
+  -MsixPath .\Claude-win-x64.msix
 ```
 
 ### 手动下载 MSIX
 
 ```text
-https://downloads.claude.ai/releases/win32/x64/3.6556.2/Claude-20c019a1e61fa5b687616af57d31f97bb3181723.msix
-SHA-256: C0AC245C9AD458ABD550BCBF2A0B34C75C51173A27F3C870602E5452CF3484F1
-大小:    284230330 bytes
+https://downloads.claude.ai/releases/win32/x64/5.1231.2/Claude-26912242b6649f3e503e012d9b7b9367d09c68e4.msix
+SHA-256: 49FBF2FC335A2CC19BBC8C7D22016F5EFFD5FB3D90F3F0EE60F5A912961AC97B
+大小:    297627772 bytes
+
+国内镜像（官方原包，SHA-256 相同）：
+
+https://github.com/Wangnov/claude-app-mirror/releases/download/claude-app-v5.1231.2/Claude-win-x64.msix
+https://gh-proxy.com/https://github.com/Wangnov/claude-app-mirror/releases/download/claude-app-v5.1231.2/Claude-win-x64.msix
+https://claudeapp.agentsmirror.com/latest/win-x64   # 跟随最新，下载后核对 SHA-256
 ```
 
 Anthropic 可能在同一 URL 替换文件。若哈希不匹配，安装器会拒绝继续；请重新下载，或只在确认文件来源后使用 `-SkipHashCheck`。
@@ -117,7 +123,9 @@ MSIX 版安装的是 Anthropic 官方包，包家族名 `Claude_pzs8sxrjxfjjc`�
 - Windows 10 19041+ 或 Windows 11；
 - 开启“虚拟机平台”（Virtual Machine Platform），通常还需要 Hyper-V；
 - 允许侧载/安装受信任的 MSIX（设置 → 应用 → 高级应用设置，或企业策略）；
-- 首次 Cowork 会下载约 1 GB 的工作区，网络需可达 `downloads.claude.ai`。
+- 首次 Cowork 会从 `downloads.claude.ai` 下载约 1.35 GB 的 VM 根盘
+  （`rootfs.vhdx.zst`，解压后约 7.8 GB）和内核；国内可能被墙/限速，
+  见 [`docs/cowork-offline.md`](docs/cowork-offline.md)。
 
 以管理员身份检查/开启虚拟机平台：
 
@@ -127,6 +135,30 @@ dism /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
 ```
 
 开启后重启。官方也提供 Cowork readiness check，可先验证机器是否支持。
+
+### Cowork 首次下载很大，怎么办
+
+标准 MSIX 首次启动 Cowork 时会下载 `rootfs.vhdx.zst`、`vmlinuz.zst`、
+`initrd.zst`，合计约 1.35 GB（解压后约 7.8 GB）。5.1231.2 的 VM bundle
+仍是 `072b6cbfe74f428a98bd86035f83b322b369d1f1`，和 3.6556.2 相同。
+
+- 直连 `downloads.claude.ai` 在国内不稳定：我这边单线程实测约
+  143 KB/s，1.35 GB 约 2.6 小时；aria2 8–16 线程或代理能快很多，但不保证。
+- 官方提供**离线 MSIX**（包含 VM 工作区 + Claude CLI，体积数 GB）：
+  `https://claude.ai/api/desktop/win32/x64/offline/latest/redirect`。
+  国内直连会 403，需要代理；下载后用 `-MsixPath` 安装：
+
+  ```powershell
+  .\Install.ps1 -Mode Msix -MsixPath .\Claude-offline.msix -SkipHashCheck
+  ```
+
+  `-SkipHashCheck` 只应用于你确认来源的离线包；它会跳过标准包的
+  size/SHA-256 校验。
+- 目前没有找到可靠的公开 VM bundle 镜像；百度网盘里的旧版
+  `rootfs.vhdx`/`claudevm.bundle` 版本可能不匹配 5.1231.2，不建议直接使用。
+- 如果已经有一台机器能正常运行同版本 Cowork，可以复制
+  `%LOCALAPPDATA%\Claude-3p\vm_bundles\claudevm.bundle`，或按
+  `docs/cowork-offline.md` 的 hardlink 方式放进 MSIX 虚拟化路径。
 
 ## 数据与隐私
 
@@ -152,7 +184,8 @@ dism /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
 | 模型列表为空 | 网关不支持 `/v1/models`；用 `Set-Gateway.ps1 -Models model-a,model-b` 显式列出 |
 | Code 首次打开很慢 | 官方客户端要下载约 106 MB 的 Claude Code CLI；网络慢时多等一会 |
 | Cowork 显示 unsupported / msix_required | 便携版不支持 Cowork；改用 MSIX 版并开启虚拟机平台 |
-| 便携版启动空白 | 确认 `app\resources\app.asar` 和 `app\resources\ion-dist\index.html` 存在；重新安装 |
+| 便携版启动空白 | 确认 `app\resources\app.asar` 和 `app\resources\ion-dist.asar`（旧版是 `ion-dist\index.html`）存在；重新安装 |
+| Cowork 下载到一半失败/很慢 | 代理 + aria2 8–16 线程，或改用官方 offline MSIX；见 `docs/cowork-offline.md` |
 | 安装 MSIX 报 0x80073CFF | 系统策略禁止侧载；启用“允许安装受信任的应用”或改用便携版 |
 | 旧版数据看不到 | 官方客户端会尝试从旧 3P 目录迁移；不要先删除 `%LOCALAPPDATA%\Claude-3p` |
 
@@ -167,6 +200,7 @@ dism /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
 ├── lib/Common.ps1                    # 下载、校验、策略、解包、快捷方式
 ├── assets/                           # 图标 + Launch-Claude.vbs
 ├── docs/legacy-patches.md            # 旧版补丁说明（已移除）
+├── docs/cowork-offline.md            # Cowork VM 下载/离线方案
 └── CHANGELOG.md
 ```
 
@@ -174,7 +208,7 @@ dism /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
 
 ```text
 <安装目录>\
-├── app\              # 官方 MSIX 的 app/ 内容（claude.exe、resources、ion-dist）
+├── app\              # 官方 MSIX 的 app/ 内容（claude.exe、resources、ion-dist.asar）
 ├── data\             # 便携版 userData（会话/配置/日志）
 └── Launch-Claude.vbs # 设置 CLAUDE_USER_DATA_DIR 后启动 app\claude.exe
 ```
@@ -193,7 +227,7 @@ dism /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
 
 ## 验证范围
 
-本仓库的静态验证包括：MSIX SHA-256 / ZIP 完整性、`app.asar` 与 `ion-dist` 布局、3P 策略键名、安装器自检。真实 Windows 上的 Chat/Code/Cowork 端到端行为取决于你的 Windows 版本、网关和 Hyper-V 配置；建议先在测试目录跑便携版，再决定是否装 MSIX。
+本仓库的静态验证包括：MSIX SHA-256 / ZIP 完整性、`app.asar` / `ion-dist.asar` 布局、3P 策略键名、安装器自检。真实 Windows 上的 Chat/Code/Cowork 端到端行为取决于你的 Windows 版本、网关和 Hyper-V 配置；建议先在测试目录跑便携版，再决定是否装 MSIX。
 
 ## 致谢
 

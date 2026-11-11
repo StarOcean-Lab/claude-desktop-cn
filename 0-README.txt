@@ -1,7 +1,7 @@
 Claude Desktop for Windows 中国版 - 速查卡
 ==========================================
 
-新版：官方 Windows MSIX 3.6556.2 + 官方 3P 配置
+新版：官方 Windows MSIX 5.1231.2 + 官方 3P 配置
 旧版：1.6608.2 Linux fork + app.asar 补丁（已删除）
 
 两种模式
@@ -28,13 +28,17 @@ Claude Desktop for Windows 中国版 - 速查卡
 
 手动下载 MSIX
 -------------
-https://downloads.claude.ai/releases/win32/x64/3.6556.2/Claude-20c019a1e61fa5b687616af57d31f97bb3181723.msix
-SHA-256: C0AC245C9AD458ABD550BCBF2A0B34C75C51173A27F3C870602E5452CF3484F1
-大小:    284230330 bytes
+https://downloads.claude.ai/releases/win32/x64/5.1231.2/Claude-26912242b6649f3e503e012d9b7b9367d09c68e4.msix
+SHA-256: 49FBF2FC335A2CC19BBC8C7D22016F5EFFD5FB3D90F3F0EE60F5A912961AC97B
+大小:    297627772 bytes
+
+国内镜像（同 SHA-256）：
+https://github.com/Wangnov/claude-app-mirror/releases/download/claude-app-v5.1231.2/Claude-win-x64.msix
+https://gh-proxy.com/https://github.com/Wangnov/claude-app-mirror/releases/download/claude-app-v5.1231.2/Claude-win-x64.msix
 
 指定本地文件：
   powershell -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1 `
-    -Mode Portable -MsixPath .\Claude.msix
+    -Mode Portable -MsixPath .\Claude-win-x64.msix
 
 切换网关
 --------
@@ -59,7 +63,8 @@ SHA-256: C0AC245C9AD458ABD550BCBF2A0B34C75C51173A27F3C870602E5452CF3484F1
 - 3P 配置错误：检查 URL/Key/AuthScheme，运行 Set-Gateway.bat
 - 模型为空：网关不支持 /v1/models，用 -Models 显式列出
 - Cowork msix_required：便携版不支持，改用 MSIX 版
+- Cowork 首次下载：1.35 GB VM 根盘，国内可能很慢；见 docs/cowork-offline.md
 - 0x80073CFF：系统禁止侧载，启用“允许安装受信任的应用”
 - Code 首次慢：官方要下载约 106 MB 的 Claude Code CLI
 
-更多说明见 README.md 和 docs/legacy-patches.md。
+更多说明见 README.md、docs/cowork-offline.md 和 docs/legacy-patches.md。

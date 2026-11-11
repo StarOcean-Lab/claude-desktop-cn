@@ -5,6 +5,36 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [5.1231.2-cn.1] - 2026-11-11
+
+### Added
+
+- Mirror-first MSIX download: `gh-proxy` / GitHub release
+  (`Wangnov/claude-app-mirror`) before the official
+  `downloads.claude.ai` URL, with the same pinned SHA-256.
+- Local MSIX search in the project directory, `Downloads`, `下载`, and the
+  desktop, so a manually downloaded file is found without `-MsixPath`.
+- `docs/cowork-offline.md`: VM bundle URLs/sizes, official offline MSIX,
+  community mirrors, preseed path, and the MSIX virtualization/hardlink fix.
+
+### Changed
+
+- **BREAKING**: rebased on the official Windows MSIX `5.1231.2`
+  (297,627,772 bytes,
+  `49FBF2FC335A2CC19BBC8C7D22016F5EFFD5FB3D90F3F0EE60F5A912961AC97B`).
+- The 5.x package moved the SPA UI from `resources/ion-dist/` to
+  `resources/ion-dist.asar`; the installer self-check accepts either layout.
+- `-SkipHashCheck` with `-MsixPath` now skips both size and SHA-256, so the
+  official multi-GB offline MSIX (which includes the Cowork VM and CLI) can be
+  installed.
+
+### Notes
+
+- The Cowork VM bundle is unchanged from 3.6556.2:
+  `072b6cbfe74f428a98bd86035f83b322b369d1f1`.
+- No reliable public mirror of the 1.35 GB VM bundle was found; the official
+  offline MSIX remains the supported no-download path.
+
 ## [3.6556.2-cn.1] - 2026-11-11
 
 ### Added

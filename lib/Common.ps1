@@ -7,10 +7,12 @@ Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
 
 $script:ProductName = 'Claude Desktop CN'
-$script:MsixVersion = '3.6556.2'
-$script:MsixUrl = 'https://downloads.claude.ai/releases/win32/x64/3.6556.2/Claude-20c019a1e61fa5b687616af57d31f97bb3181723.msix'
-$script:MsixSha256 = 'C0AC245C9AD458ABD550BCBF2A0B34C75C51173A27F3C870602E5452CF3484F1'
-$script:MsixSize = 284230330
+$script:MsixVersion = '5.1231.2'
+$script:MsixUrl = 'https://downloads.claude.ai/releases/win32/x64/5.1231.2/Claude-26912242b6649f3e503e012d9b7b9367d09c68e4.msix'
+$script:MsixSha256 = '49FBF2FC335A2CC19BBC8C7D22016F5EFFD5FB3D90F3F0EE60F5A912961AC97B'
+$script:MsixSize = 297627772
+$script:MsixMirrorUrl = 'https://github.com/Wangnov/claude-app-mirror/releases/download/claude-app-v5.1231.2/Claude-win-x64.msix'
+$script:MsixMirrorProxyUrl = 'https://gh-proxy.com/https://github.com/Wangnov/claude-app-mirror/releases/download/claude-app-v5.1231.2/Claude-win-x64.msix'
 $script:PackageFamily = 'Claude_pzs8sxrjxfjjc'
 $script:PackageAppId = 'Claude'
 $script:PolicyPath = 'HKCU:\SOFTWARE\Policies\Claude'
@@ -102,21 +104,24 @@ function Get-Sha256 {
 function Assert-MsixFile {
     param(
         [string]$Path,
-        [switch]$SkipHashCheck
+        [switch]$SkipHashCheck,
+        [switch]$SkipSizeCheck
     )
 
     if (-not (Test-Path -LiteralPath $Path)) {
         throw "MSIX not found: $Path"
     }
 
-    $size = (Get-Item -LiteralPath $Path).Length
-    if ($size -ne $script:MsixSize) {
-        throw ("MSIX size mismatch. Expected $($script:MsixSize) bytes, " +
-            "got $size. Download the file again.")
+    if (-not $SkipSizeCheck) {
+        $size = (Get-Item -LiteralPath $Path).Length
+        if ($size -ne $script:MsixSize) {
+            throw ("MSIX size mismatch. Expected $($script:MsixSize) bytes, " +
+                "got $size. Download the file again.")
+        }
     }
 
     if ($SkipHashCheck) {
-        Write-Warn 'SHA-256 check skipped by request.'
+        Write-Warn 'Size and SHA-256 checks skipped by request.'
         return
     }
 
@@ -125,7 +130,7 @@ function Assert-MsixFile {
         throw ("MSIX SHA-256 mismatch.`n  expected: $($script:MsixSha256)`n" +
             "  actual:   $actual`n" +
             'Anthropic may have replaced the file at this URL. Re-download it, ' +
-            'or pass -SkipHashCheck only if you trust the file.')
+            'or pass -SkipHashCheck -MsixPath only if you trust the file.')
     }
     Write-Ok "SHA-256 verified: $actual"
 }
@@ -139,20 +144,32 @@ function Resolve-Msix {
     if ($Path) {
         $full = (Resolve-Path -LiteralPath $Path).Path
         Write-Step "Checking local MSIX: $full"
-        Assert-MsixFile -Path $full -SkipHashCheck:$SkipHashCheck
+        Assert-MsixFile -Path $full -SkipHashCheck:$SkipHashCheck `
+            -SkipSizeCheck:$SkipHashCheck
         return $full
     }
 
-    $local = Get-ChildItem -LiteralPath $script:RepoRoot -Filter 'Claude*.msix' `
-        -File -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($local) {
+    $searchDirs = @($script:RepoRoot)
+    if ($env:USERPROFILE) {
+        $searchDirs += (Join-Path $env:USERPROFILE 'Downloads')
+        $searchDirs += (Join-Path $env:USERPROFILE '下载')
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        if ($desktop) { $searchDirs += $desktop }
+    }
+    $candidates = @()
+    foreach ($dir in $searchDirs) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        $candidates += @(Get-ChildItem -LiteralPath $dir -Filter 'Claude*.msix' `
+            -File -ErrorAction SilentlyContinue)
+    }
+    foreach ($candidate in @($candidates | Sort-Object LastWriteTime -Descending)) {
+        if ($candidate.Length -ne $script:MsixSize) { continue }
         try {
-            Write-Step "Using local MSIX: $($local.FullName)"
-            Assert-MsixFile -Path $local.FullName -SkipHashCheck:$SkipHashCheck
-            return $local.FullName
+            Write-Step "Using local MSIX: $($candidate.FullName)"
+            Assert-MsixFile -Path $candidate.FullName
+            return $candidate.FullName
         } catch {
             Write-Warn $_.Exception.Message
-            Write-Warn 'Ignoring the local MSIX and looking for the cached copy.'
         }
     }
 
@@ -160,7 +177,7 @@ function Resolve-Msix {
     if (Test-Path -LiteralPath $cache) {
         try {
             Write-Step 'Checking cached MSIX'
-            Assert-MsixFile -Path $cache -SkipHashCheck:$SkipHashCheck
+            Assert-MsixFile -Path $cache
             return $cache
         } catch {
             Write-Warn $_.Exception.Message
@@ -171,38 +188,49 @@ function Resolve-Msix {
     New-Item -ItemType Directory -Path (Split-Path -Parent $cache) -Force |
         Out-Null
 
-    Write-Step "Downloading official MSIX ($($script:MsixVersion), 284 MB)"
-    Write-Host "  $($script:MsixUrl)" -ForegroundColor DarkGray
-
-    $downloaded = $false
-    try {
-        Import-Module BitsTransfer -ErrorAction Stop
-        Start-BitsTransfer -Source $script:MsixUrl -Destination $cache `
-            -DisplayName 'Claude Desktop CN' `
-            -Description "Claude Desktop $($script:MsixVersion) MSIX"
-        $downloaded = $true
-    } catch {
-        Write-Warn 'BITS is unavailable; falling back to a plain HTTP download.'
-    }
-
-    if (-not $downloaded) {
+    $sources = @(
+        $script:MsixMirrorProxyUrl
+        $script:MsixMirrorUrl
+        $script:MsixUrl
+    )
+    foreach ($source in $sources) {
+        Remove-Item -LiteralPath $cache -Force -ErrorAction SilentlyContinue
+        Write-Step "Downloading MSIX $($script:MsixVersion)"
+        Write-Host "  $source" -ForegroundColor DarkGray
         try {
-            [System.Net.ServicePointManager]::SecurityProtocol =
-                [System.Net.SecurityProtocolType]::Tls12
-            $client = New-Object System.Net.WebClient
-            $client.Headers.Add('User-Agent',
-                "Claude-Desktop-CN/$($script:MsixVersion)")
-            $client.DownloadFile($script:MsixUrl, $cache)
+            $downloaded = $false
+            try {
+                Import-Module BitsTransfer -ErrorAction Stop
+                Start-BitsTransfer -Source $source -Destination $cache `
+                    -DisplayName 'Claude Desktop CN' `
+                    -Description "Claude Desktop $($script:MsixVersion) MSIX"
+                $downloaded = $true
+            } catch {
+                Write-Warn 'BITS is unavailable; using a plain HTTP download.'
+            }
+
+            if (-not $downloaded) {
+                [System.Net.ServicePointManager]::SecurityProtocol =
+                    [System.Net.SecurityProtocolType]::Tls12
+                $client = New-Object System.Net.WebClient
+                $client.Headers.Add('User-Agent',
+                    "Claude-Desktop-CN/$($script:MsixVersion)")
+                $client.DownloadFile($source, $cache)
+            }
+
+            Assert-MsixFile -Path $cache
+            return $cache
         } catch {
+            Write-Warn "Source failed: $($_.Exception.Message)"
             Remove-Item -LiteralPath $cache -Force -ErrorAction SilentlyContinue
-            throw ("Download failed: $($_.Exception.Message)`n" +
-                "Download the MSIX manually and pass -MsixPath:`n" +
-                "  $($script:MsixUrl)")
         }
     }
 
-    Assert-MsixFile -Path $cache -SkipHashCheck:$SkipHashCheck
-    return $cache
+    throw ("All MSIX download sources failed.`n" +
+        "  $($script:MsixMirrorProxyUrl)`n" +
+        "  $($script:MsixMirrorUrl)`n" +
+        "  $($script:MsixUrl)`n" +
+        'Download the MSIX manually and pass -MsixPath.')
 }
 
 function Read-ClaudeSettings {
@@ -522,7 +550,7 @@ function Install-Portable {
 function Install-MsixPackage {
     param([string]$Msix)
 
-    $expected = [Version]'3.6556.2.0'
+    $expected = [Version]'5.1231.2.0'
     $package = Get-AppxPackage -Name 'Claude' -ErrorAction SilentlyContinue |
         Sort-Object Version -Descending | Select-Object -First 1
     if ($package -and $package.Version -ge $expected) {
@@ -680,8 +708,11 @@ function Test-Installation {
             'app\claude.exe exists'
         Check-Item (Test-Path -LiteralPath (Join-Path $InstallDir 'app\resources\app.asar')) `
             'app\resources\app.asar exists'
-        Check-Item (Test-Path -LiteralPath (Join-Path $InstallDir 'app\resources\ion-dist\index.html')) `
-            'app\resources\ion-dist\index.html exists'
+        $ionAsar = Join-Path $InstallDir 'app\resources\ion-dist.asar'
+        $ionDir = Join-Path $InstallDir 'app\resources\ion-dist\index.html'
+        Check-Item ((Test-Path -LiteralPath $ionAsar) -or
+            (Test-Path -LiteralPath $ionDir)) `
+            'UI assets exist (ion-dist.asar or ion-dist/index.html)'
         Check-Item (Test-Path -LiteralPath (Join-Path $InstallDir 'data')) `
             'portable data directory exists'
         Check-Item (Test-Path -LiteralPath (Join-Path $InstallDir 'Launch-Claude.vbs')) `

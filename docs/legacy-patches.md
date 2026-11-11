@@ -1,7 +1,7 @@
 # 旧版 Windows 补丁退役说明
 
 旧版（Claude Desktop `1.6608.2`，Linux fork）通过 `frame-fix-wrapper.js`
-注入 5 个补丁。新版基于官方 Windows MSIX `3.6556.2`，这些补丁不再适用，
+注入 5 个补丁。新版基于官方 Windows MSIX `5.1231.2`，这些补丁不再适用，
 已从工作树删除，仅保留在 git 历史中。
 
 | 旧补丁 | 旧作用 | 为什么退役 |
