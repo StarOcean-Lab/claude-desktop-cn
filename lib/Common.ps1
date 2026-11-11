@@ -134,6 +134,19 @@ function Resolve-Msix {
         return $full
     }
 
+    $local = Get-ChildItem -LiteralPath $script:RepoRoot -Filter 'Claude*.msix' `
+        -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($local) {
+        try {
+            Write-Step "Using local MSIX: $($local.FullName)"
+            Assert-MsixFile -Path $local.FullName -SkipHashCheck:$SkipHashCheck
+            return $local.FullName
+        } catch {
+            Write-Warn $_.Exception.Message
+            Write-Warn 'Ignoring the local MSIX and looking for the cached copy.'
+        }
+    }
+
     $cache = Get-MsixCachePath
     if (Test-Path -LiteralPath $cache) {
         try {
