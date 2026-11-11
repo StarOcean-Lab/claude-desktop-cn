@@ -73,7 +73,7 @@ Anthropic 可能在同一 URL 替换文件。若哈希不匹配，安装器会�
 
 安装器会先读 `%USERPROFILE%\.claude\settings.json`、`settings.local.json` 和 `ANTHROPIC_*` 环境变量，作为默认值。cc-switch 修改这些配置后：
 
-1. 运行 `Set-Gateway.bat`（可带参数，也可直接回车沿用已有值）；
+1. 运行 `Set-Gateway.bat`（优先读取 `settings.json`，缺失时提示输入）；
 2. 完全退出并重新打开 Claude Desktop。
 
 官方 3P 配置在启动时读取；运行中的窗口不会热切换网关。
