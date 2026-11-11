@@ -13,6 +13,24 @@ $script:MsixSha256 = '49FBF2FC335A2CC19BBC8C7D22016F5EFFD5FB3D90F3F0EE60F5A91296
 $script:MsixSize = 297627772
 $script:MsixMirrorUrl = 'https://github.com/Wangnov/claude-app-mirror/releases/download/claude-app-v5.1231.2/Claude-win-x64.msix'
 $script:MsixMirrorProxyUrl = 'https://gh-proxy.com/https://github.com/Wangnov/claude-app-mirror/releases/download/claude-app-v5.1231.2/Claude-win-x64.msix'
+$script:VmBundleSha = '072b6cbfe74f428a98bd86035f83b322b369d1f1'
+$script:VmBundleFiles = @(
+    @{
+        Name = 'rootfs.vhdx.zst'
+        Size = 1309889215
+        Sha256 = 'c480f8a62d0d9be20e1a1ee31b9f25c73097f793127dcefa90b0c59ada0e12ad'
+    }
+    @{
+        Name = 'vmlinuz.zst'
+        Size = 14758684
+        Sha256 = '3118616ef6ba3866652284b8b4c224a96876c56091724c35c93caf1ccb9b50a9'
+    }
+    @{
+        Name = 'initrd.zst'
+        Size = 28024101
+        Sha256 = 'e3c5ce2b8e9e9adf67de7ec83cafa4a0c65fab8a22036a6b53f03c9765b3342a'
+    }
+)
 $script:PackageFamily = 'Claude_pzs8sxrjxfjjc'
 $script:PackageAppId = 'Claude'
 $script:PolicyPath = 'HKCU:\SOFTWARE\Policies\Claude'
@@ -567,6 +585,110 @@ function Install-MsixPackage {
     }
     Write-Ok "Claude MSIX installed: $($package.Version)"
     return $package
+}
+
+function Resolve-VmBundleSource {
+    param([string]$Path = '')
+
+    if ($Path -and -not (Test-Path -LiteralPath $Path)) {
+        throw "VM bundle directory not found: $Path"
+    }
+
+    $dirs = @()
+    if ($Path) {
+        $dirs += $Path
+    } else {
+        $dirs += $script:RepoRoot
+        if ($env:USERPROFILE) {
+            $dirs += (Join-Path $env:USERPROFILE 'Downloads')
+            $dirs += (Join-Path $env:USERPROFILE '下载')
+        }
+    }
+
+    foreach ($dir in $dirs) {
+        if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { continue }
+        $files = @{}
+        $complete = $true
+        foreach ($spec in $script:VmBundleFiles) {
+            $file = Join-Path $dir $spec.Name
+            if (-not (Test-Path -LiteralPath $file)) {
+                $complete = $false
+                break
+            }
+            if ((Get-Item -LiteralPath $file).Length -ne $spec.Size) {
+                if ($Path) {
+                    throw "VM bundle size mismatch: $file"
+                }
+                $complete = $false
+                break
+            }
+            $files[$spec.Name] = $file
+        }
+        if (-not $complete) {
+            if ($Path) {
+                throw "VM bundle directory is incomplete: $dir"
+            }
+            continue
+        }
+
+        Write-Step "Verifying local VM bundle ($($script:VmBundleSha))"
+        foreach ($spec in $script:VmBundleFiles) {
+            $actual = Get-Sha256 -Path $files[$spec.Name]
+            if ($actual -ne $spec.Sha256) {
+                $message = ("VM bundle SHA-256 mismatch for $($spec.Name):`n" +
+                    "  expected: $($spec.Sha256)`n  actual:   $actual")
+                if ($Path) { throw $message }
+                Write-Warn $message
+                $complete = $false
+                break
+            }
+            Write-Ok "$($spec.Name) verified"
+        }
+        if (-not $complete) { continue }
+        return @{ Dir = $dir; Files = $files }
+    }
+    return $null
+}
+
+function Install-VmBundle {
+    param([hashtable]$Bundle)
+
+    $dest = Join-Path $env:LOCALAPPDATA 'Claude-3p\vm_bundles\claudevm.bundle'
+    New-Item -ItemType Directory -Path $dest -Force | Out-Null
+
+    $root = [IO.Path]::GetPathRoot($dest)
+    if ($root) {
+        try {
+            $driveName = $root.TrimEnd('\').TrimEnd(':')
+            $free = (Get-PSDrive -Name $driveName -ErrorAction Stop).Free
+            if ($free -lt 10GB) {
+                Write-Warn ("Only $([math]::Round($free / 1GB, 1)) GB free on " +
+                    "$root. Cowork needs about 10 GB for the staged copy and " +
+                    'the decompressed rootfs.')
+            }
+        } catch {
+        }
+    }
+
+    foreach ($spec in $script:VmBundleFiles) {
+        $src = $Bundle.Files[$spec.Name]
+        $dst = Join-Path $dest $spec.Name
+        if (Test-Path -LiteralPath $dst) {
+            if ((Get-Item -LiteralPath $dst).Length -eq $spec.Size) {
+                Write-Ok "$($spec.Name) already staged"
+                continue
+            }
+            Remove-Item -LiteralPath $dst -Force
+        }
+        Write-Step ("Staging $($spec.Name) " +
+            "($([math]::Round($spec.Size / 1MB, 1)) MB)")
+        Copy-Item -LiteralPath $src -Destination $dst -Force
+        if ((Get-Item -LiteralPath $dst).Length -ne $spec.Size) {
+            throw "Copy verification failed for $($spec.Name)"
+        }
+        Write-Ok "$($spec.Name) staged"
+    }
+    Write-Ok "Cowork VM bundle staged at $dest"
 }
 
 function Copy-AppIcon {

@@ -31,3 +31,8 @@ data/
 cache/
 install.json
 policy-backup.json
+
+# Cowork VM bundle (1+ GB; staged locally, never committed)
+*.zst
+*.vhdx
+vm_bundles/

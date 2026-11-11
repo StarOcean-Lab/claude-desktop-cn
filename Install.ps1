@@ -7,6 +7,7 @@ param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\Claude-CN'),
 
     [string]$MsixPath = '',
+    [string]$VmBundleDir = '',
     [string]$BaseUrl = '',
     [string]$ApiKey = '',
     [string]$AuthScheme = '',
@@ -84,6 +85,13 @@ try {
             -ErrorAction SilentlyContinue | Select-Object -First 1
         Install-MsixPackage -Msix $msix | Out-Null
         if (-not $beforePackage) { $msixInstalledByUs = $true }
+        $vmBundle = Resolve-VmBundleSource -Path $VmBundleDir
+        if ($vmBundle) {
+            Install-VmBundle -Bundle $vmBundle
+        } else {
+            Write-Host ('  未找到本地 VM bundle；首次 Cowork 会从 ' +
+                'downloads.claude.ai 下载。') -ForegroundColor DarkGray
+        }
     } else {
         Install-Portable -Msix $msix -InstallDir $InstallDir
     }

@@ -8,12 +8,12 @@ Cowork 不是普通 Electron 窗口：它要在本机启动一个 Linux 虚拟�
 
 以 5.1231.2（VM bundle `072b6cbfe74f428a98bd86035f83b322b369d1f1`）为例：
 
-| 文件 | 大小 | 用途 |
-|---|---:|---|
-| `rootfs.vhdx.zst` | 1,309,889,215 B（约 1.31 GB） | Linux 根盘，解压约 7.83 GB |
-| `vmlinuz.zst` | 14,758,684 B | 内核 |
-| `initrd.zst` | 28,024,101 B | initramfs |
-| 合计 | 约 1.35 GB 压缩 | 解压后约 8 GB |
+| 文件 | 大小 | SHA-256（win32 x64） | 用途 |
+|---|---:|---|---|
+| `rootfs.vhdx.zst` | 1,309,889,215 B（约 1.31 GB） | `c480f8a62d0d9be20e1a1ee31b9f25c73097f793127dcefa90b0c59ada0e12ad` | Linux 根盘，解压约 7.83 GB |
+| `vmlinuz.zst` | 14,758,684 B | `3118616ef6ba3866652284b8b4c224a96876c56091724c35c93caf1ccb9b50a9` | 内核 |
+| `initrd.zst` | 28,024,101 B | `e3c5ce2b8e9e9adf67de7ec83cafa4a0c65fab8a22036a6b53f03c9765b3342a` | initramfs |
+| 合计 | 约 1.35 GB 压缩 | | 解压后约 8 GB |
 
 URL 形如：
 
@@ -37,6 +37,23 @@ https://downloads.claude.ai/vms/linux/x64/<bundle-sha>/initrd.zst
   经常被墙或限速。
 
 所以“能下载”不等于“能稳定装好 Cowork”。
+
+## 本地预置（安装器已支持）
+
+如果已经手动下好三个 `.zst`，放在项目根目录（或任意目录），安装器会在
+MSIX 安装后校验 SHA-256 并复制到：
+
+```text
+%LOCALAPPDATA%\Claude-3p\vm_bundles\claudevm.bundle
+```
+
+```powershell
+.\Install.ps1 -Mode Msix -VmBundleDir . -BaseUrl ... -ApiKey ...
+```
+
+首次 Cowork 会直接本地解压，不再访问 `downloads.claude.ai`。复制 1.35 GB
+后还要解压约 7.8 GB，建议 C: 至少留 10 GB。版本或哈希不匹配时安装器会
+拒绝使用，不会把旧 VM 塞进去。
 
 ## 官方离线 MSIX（推荐）
 

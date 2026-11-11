@@ -27,6 +27,11 @@ All notable changes to this project are documented here. The format follows
 - `-SkipHashCheck` with `-MsixPath` now skips both size and SHA-256, so the
   official multi-GB offline MSIX (which includes the Cowork VM and CLI) can be
   installed.
+- MSIX install can stage a locally downloaded Cowork VM bundle
+  (`rootfs.vhdx.zst`, `vmlinuz.zst`, `initrd.zst`) from the project root or
+  `-VmBundleDir`, verify its pinned SHA-256 values, and copy it to
+  `%LOCALAPPDATA%\Claude-3p\vm_bundles\claudevm.bundle` to avoid the 1.35 GB
+  runtime download.
 
 ### Notes
 

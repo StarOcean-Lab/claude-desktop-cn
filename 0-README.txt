@@ -64,6 +64,7 @@ https://gh-proxy.com/https://github.com/Wangnov/claude-app-mirror/releases/downl
 - 模型为空：网关不支持 /v1/models，用 -Models 显式列出
 - Cowork msix_required：便携版不支持，改用 MSIX 版
 - Cowork 首次下载：1.35 GB VM 根盘，国内可能很慢；见 docs/cowork-offline.md
+- 已下好 rootfs/vmlinuz/initrd 的 .zst：放项目根目录，MSIX 安装器会校验并预置
 - 0x80073CFF：系统禁止侧载，启用“允许安装受信任的应用”
 - Code 首次慢：官方要下载约 106 MB 的 Claude Code CLI
 

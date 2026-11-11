@@ -144,6 +144,17 @@ dism /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
 
 - 直连 `downloads.claude.ai` 在国内不稳定：我这边单线程实测约
   143 KB/s，1.35 GB 约 2.6 小时；aria2 8–16 线程或代理能快很多，但不保证。
+- 已经手动下好 `rootfs.vhdx.zst`、`vmlinuz.zst`、`initrd.zst`：
+  放在项目根目录，或显式指定目录。MSIX 安装器会校验 SHA-256 并复制到
+  `%LOCALAPPDATA%\Claude-3p\vm_bundles\claudevm.bundle`，首次 Cowork
+  直接本地解压，不再下载：
+
+  ```powershell
+  .\Install.ps1 -Mode Msix -VmBundleDir . -BaseUrl ... -ApiKey ...
+  ```
+
+  文件校验值见 [`docs/cowork-offline.md`](docs/cowork-offline.md)；
+  版本不匹配时安装器会拒绝使用。
 - 官方提供**离线 MSIX**（包含 VM 工作区 + Claude CLI，体积数 GB）：
   `https://claude.ai/api/desktop/win32/x64/offline/latest/redirect`。
   国内直连会 403，需要代理；下载后用 `-MsixPath` 安装：
