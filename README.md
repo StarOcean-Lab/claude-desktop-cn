@@ -147,6 +147,7 @@ dism /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
 |---|---|
 | 安装器提示 SHA-256 不匹配 | Anthropic 替换了同 URL 的文件；重新下载，或 `-SkipHashCheck` 仅在信任文件时使用 |
 | 启动后 3P 配置错误 | 运行 `Set-Gateway.bat` 重写策略；确认 URL 是根地址、Key 有效、`AuthScheme` 正确 |
+| 3P 配置不生效 | 如果 `HKLM\SOFTWARE\Policies\Claude` 存在，机器策略会覆盖 HKCU；移除旧策略或用管理员写 HKLM |
 | Chat 能开但请求 404 | 网关没有实现 `/v1/messages`，或基地址多写了 `/v1` |
 | 模型列表为空 | 网关不支持 `/v1/models`；用 `Set-Gateway.ps1 -Models model-a,model-b` 显式列出 |
 | Code 首次打开很慢 | 官方客户端要下载约 106 MB 的 Claude Code CLI；网络慢时多等一会 |

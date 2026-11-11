@@ -382,6 +382,12 @@ function ConvertTo-JsonStringArray {
 function Write-GatewayPolicy {
     param([hashtable]$Settings)
 
+    if (Test-Path -LiteralPath 'HKLM:\SOFTWARE\Policies\Claude') {
+        Write-Warn ('HKLM\SOFTWARE\Policies\Claude exists; machine policy ' +
+            'overrides this HKCU configuration. Remove the machine policy or ' +
+            'write the same values there with administrator rights.')
+    }
+
     New-Item -Path $script:PolicyPath -Force | Out-Null
     $values = [ordered]@{
         inferenceProvider = 'gateway'
