@@ -36,13 +36,18 @@ try {
     }
 
     if ($state -and $state.mode -eq 'Msix') {
-        $packages = Get-AppxPackage -Name 'Claude' -ErrorAction SilentlyContinue
-        foreach ($package in @($packages)) {
-            if ($package) {
-                Remove-AppxPackage -Package $package.PackageFullName `
-                    -ErrorAction Stop
-                Write-Ok "Removed MSIX package: $($package.Version)"
+        if ($state.msixInstalledByUs -eq $true) {
+            $packages = Get-AppxPackage -Name 'Claude' -ErrorAction SilentlyContinue
+            foreach ($package in @($packages)) {
+                if ($package) {
+                    Remove-AppxPackage -Package $package.PackageFullName `
+                        -ErrorAction Stop
+                    Write-Ok "Removed MSIX package: $($package.Version)"
+                }
             }
+        } else {
+            Write-Host '  MSIX was already installed before this kit; leaving it in place.' `
+                -ForegroundColor DarkGray
         }
     }
 

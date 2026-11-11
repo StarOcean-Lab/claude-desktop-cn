@@ -67,8 +67,17 @@ try {
     $settings = Resolve-GatewaySettings -BaseUrl $BaseUrl -ApiKey $ApiKey `
         -AuthScheme $AuthScheme -Models $Models -NonInteractive:$NonInteractive
 
+    $previousState = Read-InstallState
+    $msixInstalledByUs = $false
+    if ($previousState -and $previousState.msixInstalledByUs -eq $true) {
+        $msixInstalledByUs = $true
+    }
+
     if ($Mode -eq 'Msix') {
+        $beforePackage = Get-AppxPackage -Name 'Claude' `
+            -ErrorAction SilentlyContinue | Select-Object -First 1
         Install-MsixPackage -Msix $msix | Out-Null
+        if (-not $beforePackage) { $msixInstalledByUs = $true }
     } else {
         Install-Portable -Msix $msix -InstallDir $InstallDir
     }
@@ -76,7 +85,8 @@ try {
     Backup-Policy
     Write-GatewayPolicy -Settings $settings
 
-    Save-InstallState -Mode $Mode -InstallDir $InstallDir
+    Save-InstallState -Mode $Mode -InstallDir $InstallDir `
+        -MsixInstalledByUs $msixInstalledByUs
 
     if (-not $NoShortcut) {
         $icon = Copy-AppIcon -InstallDir $InstallDir -Msix $msix

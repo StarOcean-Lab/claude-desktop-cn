@@ -580,7 +580,8 @@ function New-DesktopShortcut {
 function Save-InstallState {
     param(
         [string]$Mode,
-        [string]$InstallDir
+        [string]$InstallDir,
+        [bool]$MsixInstalledByUs = $false
     )
 
     New-Item -ItemType Directory -Path $script:StateDir -Force | Out-Null
@@ -590,6 +591,7 @@ function Save-InstallState {
         installDir = $InstallDir
         installedAt = (Get-Date).ToString('o')
         packageFamily = $script:PackageFamily
+        msixInstalledByUs = $MsixInstalledByUs
     }
     $state | ConvertTo-Json -Depth 4 |
         Set-Content -LiteralPath $script:StateFile -Encoding UTF8
